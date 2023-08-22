@@ -52,11 +52,13 @@ jobs:
         with:
           path: wheels
 
-      - name: Install maturin
-        run: pip install maturin
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install twine
+        run: pip install twine
 
       - name: Publish to PyPI
-        run: |
-          for file in wheels/*/*.whl; do
-            maturin publish --wheel-file "$file" --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
-          done
+        run: twine upload wheels/*/*.whl --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
