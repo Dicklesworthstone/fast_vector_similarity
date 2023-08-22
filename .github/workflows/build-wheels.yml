@@ -43,4 +43,4 @@ jobs:
           path: target/wheels/*.whl
 
       - name: Publish to PyPI
-        run: maturin publish --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_API_TOKEN }}
+        run: maturin publish --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
