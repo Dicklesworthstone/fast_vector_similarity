@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e -x
 
+# Install Rust and Cargo
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source $HOME/.cargo/env
+
 # Compile wheels
 for PYBIN in /opt/python/cp3[6-9]*; do
     "${PYBIN}/bin/pip" install --upgrade pip
