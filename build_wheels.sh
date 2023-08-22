@@ -6,7 +6,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source $HOME/.cargo/env
 
 # Python versions to build for
-PYTHON_VERSIONS=("cp36-cp36m" "cp37-cp37m" "cp38-cp38" "cp39-cp39" "cp310-cp310" "cp311-cp311")
+PYTHON_VERSIONS=("cp39-cp39" "cp310-cp310" "cp311-cp311")
 
 # Compile wheels
 for PYVER in "${PYTHON_VERSIONS[@]}"; do
