@@ -1,4 +1,5 @@
 # Fast Vector Similarity Library
+![image](https://github.com/Dicklesworthstone/fast_vector_similarity/assets/35050222/00d12acf-af8c-4eed-9986-954555d7b202)
 
 ## Introduction
 
