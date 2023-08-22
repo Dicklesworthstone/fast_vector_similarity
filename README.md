@@ -84,7 +84,7 @@ def main():
     print("Kendall's tau:", similarity_stats_json["kendall_tau"])
     print("Distance Correlation:", similarity_stats_json["approximate_distance_correlation"])
     print("Jensen-Shannon Similarity:", similarity_stats_json["jensen_shannon_similarity"])
-    print("Hoeffding's D:", similarity_stats_json["hoeffing_d"])
+    print("Hoeffding's D:", similarity_stats_json["hoeffding_d"])
     print("_______________________________________________________________________________________________________________________________________________\n")
 
     # Bootstrapped calculations
@@ -117,7 +117,7 @@ def main():
     print("Robust Kendall's tau:", bootstrapped_similarity_stats_json["kendall_tau"])
     print("Robust Distance Correlation:", bootstrapped_similarity_stats_json["approximate_distance_correlation"])
     print("Robust Jensen-Shannon Similarity:", bootstrapped_similarity_stats_json["jensen_shannon_similarity"])
-    print("Robust Hoeffding's D:", bootstrapped_similarity_stats_json["hoeffing_d"])
+    print("Robust Hoeffding's D:", bootstrapped_similarity_stats_json["hoeffding_d"])
     print("_______________________________________________________________________________________________________________________________________________\n")
 
 ```
