@@ -79,7 +79,7 @@ jobs:
       - name: Build wheel (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-         docker run --rm -v $(pwd):/io -w /io quay.io/pypa/manylinux${{ matrix.manylinux }}_x86_64 /io/build_wheels.sh
+         docker run --rm -v $(pwd):/io -w /io quay.io/pypa/manylinux2014_x86_64 /io/build_wheels.sh
 
       - name: Build wheel (Windows and macOS)
         if: matrix.os != 'ubuntu-latest'
