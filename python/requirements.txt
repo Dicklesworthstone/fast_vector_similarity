@@ -1,0 +1,3 @@
+numpy
+pandas
+fast_vector_similarity

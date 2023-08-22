@@ -1,7 +1,35 @@
 import time
 import numpy as np
 import json
+import pandas as pd
 import fast_vector_similarity as fvs
+from random import choice
+
+def convert_embedding_json_to_pandas_df(file_path):
+    # Read the JSON file
+    with open(file_path, 'r') as file:
+        data = json.load(file)
+    # Extract the text and embeddings
+    texts = [item['text'] for item in data]
+    embeddings = [item['embedding'] for item in data]
+    # Determine the total number of vectors and the dimensions of each vector
+    total_vectors = len(embeddings)
+    vector_dimensions = len(embeddings[0]) if total_vectors > 0 else 0
+    # Print the total number of vectors and dimensions
+    print(f"Total number of vectors: {total_vectors}")
+    print(f"Dimensions of each vector: {vector_dimensions}")
+    # Convert the embeddings into a DataFrame
+    df = pd.DataFrame(embeddings, index=texts)
+    return df
+
+def apply_fvs_to_vector(row_embedding, query_embedding):
+    params = {
+        "vector_1": query_embedding.tolist(),
+        "vector_2": row_embedding.tolist(),
+        "similarity_measure": "all"
+    }
+    similarity_stats_str = fvs.py_compute_vector_similarity_stats(json.dumps(params))
+    return json.loads(similarity_stats_str)
 
 def main():
     length_of_test_vectors = 15000
@@ -77,6 +105,36 @@ def main():
 
         print(f"\nDifference between exact and bootstrapped {measure}: {absolute_difference}")
         print(f"Difference as % of the exact value: {percentage_difference:.2f}%")
+
+    print("Now testing with a larger dataset, using sentence embedddings from Llama2 (4096-dimensional vectors) on some Shakespeare Sonnets...")
+    # Load the embeddings into a DataFrame
+    input_file_path = "sample_input_files/Shakespeare_Sonnets_small.json"
+    embeddings_df = convert_embedding_json_to_pandas_df(input_file_path)
+    
+    # Select a random row for the query embedding
+    query_embedding_index = choice(embeddings_df.index)
+    query_embedding = embeddings_df.loc[query_embedding_index]
+    print(f"Selected query embedding for sentence: `{query_embedding_index}`")
+
+    # Remove the selected row from the DataFrame
+    embeddings_df = embeddings_df.drop(index=query_embedding_index)
+
+    # Apply the function to each row of embeddings_df
+    json_outputs = embeddings_df.apply(lambda row: apply_fvs_to_vector(row, query_embedding), axis=1)
+
+    # Create a DataFrame from the list of JSON outputs
+    vector_similarity_results_df = pd.DataFrame.from_records(json_outputs)
+    vector_similarity_results_df.index = embeddings_df.index
+
+    # Add the required columns to the DataFrame
+    columns = ["spearman_rho", "kendall_tau", "approximate_distance_correlation", "jensen_shannon_similarity", "hoeffding_d"]
+    vector_similarity_results_df = vector_similarity_results_df[columns]
+    
+    # Sort the DataFrame by the hoeffding_d column in descending order
+    vector_similarity_results_df = vector_similarity_results_df.sort_values(by="hoeffding_d", ascending=False)
+    
+    print("\nTop 10 most similar embedding results by Hoeffding's D:")
+    print(vector_similarity_results_df.head(10))
 
 if __name__ == "__main__":
     main()
