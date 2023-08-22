@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "fast_vector_similarity"
-version = "0.1.2"
+version = "0.1.3"
 description = "Compute various vector similarity metrics in Rust for Python, including bootstrapped/bagged robust estimators."
 license = "MIT"
 authors = [{ name = "Jeffrey Emanuel", email = "jeff@pastel.network" }]
