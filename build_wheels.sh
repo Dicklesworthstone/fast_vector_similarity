@@ -5,6 +5,9 @@ set -e -x
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source $HOME/.cargo/env
 
+# Install Python dependencies
+yum install -y gcc make libffi-devel openssl-devel bzip2-devel zlib-devel readline-devel sqlite-devel xz-devel ncurses-devel gdbm-devel
+
 # Install pyenv
 curl https://pyenv.run | bash
 export PATH="$HOME/.pyenv/bin:$PATH"
