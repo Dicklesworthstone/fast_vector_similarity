@@ -1,6 +1,6 @@
 [build-system]
 requires = ["maturin"]
-build-backend = "maturin.maturin_pep517:build"
+build-backend = "maturin"
 
 [project]
 name = "fast_vector_similarity"
