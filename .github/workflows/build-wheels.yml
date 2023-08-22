@@ -1,0 +1,35 @@
+name: Build Wheels
+
+on:
+  push:
+    branches:
+      - main  # Adjust to match your primary branch name
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        python-version: [3.6, 3.7, 3.8, 3.9, 3.10, 3.11]  # Add/remove versions as needed
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install maturin
+      run: pip install maturin
+
+    - name: Build wheel
+      run: maturin build --release --manylinux=2010
+
+    - name: Upload wheel
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: target/wheels/*.whl
