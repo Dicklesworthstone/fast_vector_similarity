@@ -1,5 +1,4 @@
 # Fast Vector Similarity Library
-![image](https://github.com/Dicklesworthstone/fast_vector_similarity/assets/35050222/00d12acf-af8c-4eed-9986-954555d7b202)
 
 ## Introduction
 
@@ -215,6 +214,9 @@ def main():
     print("\nTop 10 most similar embedding results by Hoeffding's D:")
     print(vector_similarity_results_df.head(10))
 ```
+
+### Screenshot of Output:
+![image](https://github.com/Dicklesworthstone/fast_vector_similarity/assets/35050222/a3445767-f574-4627-808a-30c347271757)
 
 ## Usage
 
