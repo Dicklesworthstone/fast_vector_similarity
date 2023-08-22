@@ -10,7 +10,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
+        os: [ubuntu-latest, windows-latest, macOS-latest, osx-arm64]
         python-version: ['3.8', '3.9', '3.10', '3.11']
 
     steps:
@@ -43,4 +43,4 @@ jobs:
           path: target/wheels/*.whl
 
       - name: Publish to PyPI
-        run: maturin publish --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }}
+        run: maturin publish --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_API_TOKEN }}
