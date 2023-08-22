@@ -3,7 +3,7 @@ name: Build Wheels
 on:
   push:
     branches:
-      - main  # Adjust to match your primary branch name
+      - main
 
 jobs:
   build:
@@ -39,8 +39,19 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v2
         with:
-          name: wheels
+          name: wheels-${{ matrix.python-version }}
           path: target/wheels/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v2
 
       - name: Publish to PyPI
         run: maturin publish --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}

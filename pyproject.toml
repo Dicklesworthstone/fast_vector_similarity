@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "fast_vector_similarity"
-version = "0.1.1"
+version = "0.1.2"
 description = "Compute various vector similarity metrics in Rust for Python, including bootstrapped/bagged robust estimators."
 license = "MIT"
 authors = [{ name = "Jeffrey Emanuel", email = "jeff@pastel.network" }]
@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
