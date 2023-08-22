@@ -5,15 +5,22 @@ set -e -x
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source $HOME/.cargo/env
 
+# Install pyenv
+curl https://pyenv.run | bash
+export PATH="$HOME/.pyenv/bin:$PATH"
+eval "$(pyenv init --path)"
+eval "$(pyenv virtualenv-init -)"
+
 # Python versions to build for
-PYTHON_VERSIONS=("cp39-cp39" "cp310-cp310" "cp311-cp311")
+PYTHON_VERSIONS=("3.9.7" "3.10.0" "3.11.0")
 
 # Compile wheels
 for PYVER in "${PYTHON_VERSIONS[@]}"; do
-    PYBIN="/opt/python/${PYVER}/bin"
-    "${PYBIN}/pip" install --upgrade pip
-    "${PYBIN}/pip" install maturin
-    "${PYBIN}/maturin" build --release
+    pyenv install $PYVER
+    pyenv global $PYVER
+    python -m pip install --upgrade pip
+    pip install maturin
+    maturin build --release
 done
 
 # Copy the wheels to the shared volume
