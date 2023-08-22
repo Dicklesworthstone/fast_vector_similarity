@@ -11,42 +11,58 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - runtime: linux-x64
+            os: ubuntu-latest
             python-version: '3.8'
-            manylinux: '2014'
-          - os: ubuntu-latest
+            manylinux: '2_28'
+          - runtime: linux-x64
+            os: ubuntu-latest
             python-version: '3.9'
-            manylinux: '2014'
-          - os: ubuntu-latest
+            manylinux: '2_28'
+          - runtime: linux-x64
+            os: ubuntu-latest
             python-version: '3.10'
-            manylinux: '2014'
-          - os: ubuntu-latest
+            manylinux: '2_28'
+          - runtime: linux-x64
+            os: ubuntu-latest
             python-version: '3.11'
-            manylinux: '2014'
-          - os: windows-latest
+            manylinux: '2_28'
+          - runtime: win-x64
+            os: windows-2019
             python-version: '3.8'
-          - os: windows-latest
+          - runtime: win-x64
+            os: windows-2019
             python-version: '3.9'
-          - os: windows-latest
+          - runtime: win-x64
+            os: windows-2019
             python-version: '3.10'
-          - os: windows-latest
+          - runtime: win-x64
+            os: windows-2019
             python-version: '3.11'
-          - os: macOS-latest
+          - runtime: osx-x64
+            os: macOS-latest
             python-version: '3.8'
-          - os: macOS-latest
+          - runtime: osx-x64
+            os: macOS-latest
             python-version: '3.9'
-          - os: macOS-latest
+          - runtime: osx-x64
+            os: macOS-latest
             python-version: '3.10'
-          - os: macOS-latest
+          - runtime: osx-x64
+            os: macOS-latest
             python-version: '3.11'
-          - os: aarch64-apple-darwin
+          - runtime: osx-arm64
+            os: macOS-latest
             python-version: '3.8'
-          - os: aarch64-apple-darwin
+          - runtime: osx-arm64
+            os: macOS-latest
             python-version: '3.9'
-          - os: aarch64-apple-darwin
+          - runtime: osx-arm64
+            os: macOS-latest
             python-version: '3.10'
-          - os: aarch64-apple-darwin
-            python-version: '3.11'
+          - runtime: osx-arm64
+            os: macOS-latest
+            python-version: '3.11'                        
     steps:
       - name: Check out code
         uses: actions/checkout@v2
@@ -63,7 +79,7 @@ jobs:
       - name: Build wheel (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          docker run --rm -v $(pwd):/io quay.io/pypa/manylinux${{ matrix.manylinux }}_x86_64 /io/build_wheels.sh
+         docker run --rm -v $(pwd):/io -w /io quay.io/pypa/manylinux${{ matrix.manylinux }}_x86_64 /io/build_wheels.sh
 
       - name: Build wheel (Windows and macOS)
         if: matrix.os != 'ubuntu-latest'
