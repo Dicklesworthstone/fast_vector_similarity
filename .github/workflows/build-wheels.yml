@@ -36,8 +36,27 @@ jobs:
       - name: Build wheel
         run: maturin build --release
 
+      - name: Upload wheel
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          path: target/wheels/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v2
+        with:
+          path: wheels
+
+      - name: Install maturin
+        run: pip install maturin
+
       - name: Publish to PyPI
         run: |
-          for file in target/wheels/*.whl; do
-            maturin publish --wheel-file $file --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
+          for file in wheels/*/*.whl; do
+            maturin publish --wheel-file "$file" --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
           done
