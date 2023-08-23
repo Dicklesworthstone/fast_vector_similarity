@@ -275,9 +275,3 @@ The bootstrapping technique offers several advantages:
 - **Enhanced Understanding of Relationships**: By assessing the distribution of similarity measures, bootstrapping provides a more comprehensive view of the relationships between vectors. This deeper understanding can be vital in contexts like data analysis, where subtle differences in relationships may have significant implications.
 
 The inclusion of the bootstrapping technique in the Fast Vector Similarity Library adds a layer of robustness and flexibility to the computation of similarity measures. It offers users a way to obtain more reliable and insightful estimates, accommodating various data characteristics and analytical needs. Whether dealing with potential outliers or seeking a more nuanced understanding of vector relationships, bootstrapping provides a valuable tool within the library's comprehensive suite of features.
-
-## Conclusion
-
-The Fast Vector Similarity Library offers an extensive set of tools for computing various similarity measures between vectors. With the inclusion of performance optimizations and Python bindings, it can be an essential part of any data analysis or machine learning pipeline.
-
-For further details and customization, please refer to the source code.
