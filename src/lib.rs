@@ -3,7 +3,6 @@ use ndarray_rand::rand_distr::Uniform;
 use ndarray::prelude::*;
 use rayon::prelude::*;
 use serde_json::json;
-use statrs::distribution::{Continuous, Normal as StatsrsNormal};
 use rand::seq::IteratorRandom; // To select random indices
 use std::error::Error;
 use pyo3::prelude::*;
@@ -12,7 +11,7 @@ use serde_json::Value;
 
 fn average_rank(data: &[f64]) -> Vec<f64> {
     let mut ranks: Vec<(usize, f64)> = data.iter().cloned().enumerate().collect();
-    ranks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    ranks.par_sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut rank_values = vec![0.0; data.len()];
     let mut i = 0;
     while i < ranks.len() {
@@ -31,7 +30,7 @@ fn average_rank(data: &[f64]) -> Vec<f64> {
     rank_values
 }
 
-fn spearman_rho(x: &[f64], y: &[f64]) -> f64 {
+pub fn spearman_rho(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len() as f64;
     let rank_x = average_rank(x);
     let rank_y = average_rank(y);
@@ -43,119 +42,326 @@ fn spearman_rho(x: &[f64], y: &[f64]) -> f64 {
     1.0 - (6.0 * d_squared_sum) / (n * (n * n - 1.0))
 }
 
-fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
-    assert_eq!(x.len(), y.len());
-    let n = x.len();
-    let mut concordant_count = 0;
-    let mut discordant_count = 0;
-    for i in 0..n {
-        for j in i + 1..n {
-            let x_concordant = (x[i] > x[j]) as i64 - (x[i] < x[j]) as i64;
-            let y_concordant = (y[i] > y[j]) as i64 - (y[i] < y[j]) as i64;
-            let concordance = x_concordant * y_concordant;
+fn count_inversions(arr: &mut [f64]) -> usize {
+    fn merge_sort(arr: &mut [f64], temp: &mut [f64]) -> usize {
+        let n = arr.len();
+        if n <= 1 {
+            return 0;
+        }
+        let mid = n / 2;
+        let mut inv_count = merge_sort(&mut arr[..mid], &mut temp[..mid]);
+        inv_count += merge_sort(&mut arr[mid..], &mut temp[mid..]);
+        inv_count += merge(arr, temp, mid);
+        inv_count
+    }
 
-            if concordance > 0 {
-                concordant_count += 1;
-            } else if concordance < 0 {
-                discordant_count += 1;
+    fn merge(arr: &mut [f64], temp: &mut [f64], mid: usize) -> usize {
+        let mut i = 0;
+        let mut j = mid;
+        let mut k = 0;
+        let mut inv_count = 0;
+
+        while i < mid && j < arr.len() {
+            if arr[i] <= arr[j] {
+                temp[k] = arr[i];
+                i += 1;
+            } else {
+                temp[k] = arr[j];
+                inv_count += mid - i;
+                j += 1;
+            }
+            k += 1;
+        }
+        while i < mid {
+            temp[k] = arr[i];
+            i += 1;
+            k += 1;
+        }
+        while j < arr.len() {
+            temp[k] = arr[j];
+            j += 1;
+            k += 1;
+        }
+        arr.copy_from_slice(&temp[..arr.len()]);
+        inv_count
+    }
+
+    let n = arr.len();
+    let mut temp = vec![0.0; n];
+    merge_sort(arr, &mut temp)
+}
+
+pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len() as f64;
+
+    let rank_x = average_rank(x);
+    let rank_y = average_rank(y);
+
+    // Create an array of ranks sorted by rank_x
+    let mut pairs: Vec<(f64, f64)> = rank_x
+        .iter()
+        .zip(rank_y.iter())
+        .map(|(&rx, &ry)| (rx, ry))
+        .collect();
+
+    // Sort pairs by rank_x
+    pairs.par_sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Extract rank_y in the order of sorted rank_x
+    let sorted_rank_y: Vec<f64> = pairs.iter().map(|&(_, ry)| ry).collect();
+
+    // Count inversions in sorted_rank_y using a more efficient algorithm
+    let inversions = count_inversions(&mut sorted_rank_y.clone());
+
+    let total_pairs = n * (n - 1.0) / 2.0;
+    let tau = 1.0 - 2.0 * inversions as f64 / total_pairs;
+
+    tau
+}
+
+pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len() as f64;
+    let num_bins: usize = 20;
+
+    // Compute bin edges for x and y
+    let x_min = x.iter().cloned().fold(f64::INFINITY, f64::min);
+    let x_max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let y_min = y.iter().cloned().fold(f64::INFINITY, f64::min);
+    let y_max = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    // Initialize histograms
+    let mut joint_hist = vec![vec![0f64; num_bins]; num_bins];
+    let mut x_hist = vec![0f64; num_bins];
+    let mut y_hist = vec![0f64; num_bins];
+
+    // Assign data to bins and compute histograms
+    x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
+        // Find bin index for xi and yi
+        let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
+        let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
+        let x_bin = x_bin.min(num_bins - 1);
+        let y_bin = y_bin.min(num_bins - 1);
+
+        joint_hist[x_bin][y_bin] += 1.0;
+        x_hist[x_bin] += 1.0;
+        y_hist[y_bin] += 1.0;
+    });
+
+    // Normalize histograms to get probability distributions
+    let p_x: Vec<f64> = x_hist.iter().map(|&count| count / n).collect();
+    let p_y: Vec<f64> = y_hist.iter().map(|&count| count / n).collect();
+    let p_xy: Vec<Vec<f64>> = joint_hist
+        .iter()
+        .map(|row| row.iter().map(|&count| count / n).collect())
+        .collect();
+
+    // Compute P(X) * P(Y)
+    let mut p_x_p_y = vec![vec![0f64; num_bins]; num_bins];
+    for i in 0..num_bins {
+        for j in 0..num_bins {
+            p_x_p_y[i][j] = p_x[i] * p_y[j];
+        }
+    }
+
+    // Compute M = 0.5 * (P(X,Y) + P(X)P(Y))
+    let mut m = vec![vec![0f64; num_bins]; num_bins];
+    for i in 0..num_bins {
+        for j in 0..num_bins {
+            m[i][j] = 0.5 * (p_xy[i][j] + p_x_p_y[i][j]);
+        }
+    }
+
+    // Compute KL divergences
+    let mut kl1 = 0.0;
+    let mut kl2 = 0.0;
+    let ln2 = std::f64::consts::LN_2;
+
+    for i in 0..num_bins {
+        for j in 0..num_bins {
+            if p_xy[i][j] > 0.0 {
+                kl1 += p_xy[i][j] * (p_xy[i][j] / m[i][j]).ln();
+            }
+            if p_x_p_y[i][j] > 0.0 {
+                kl2 += p_x_p_y[i][j] * (p_x_p_y[i][j] / m[i][j]).ln();
             }
         }
     }
-    (concordant_count as f64 - discordant_count as f64) / (concordant_count as f64 + discordant_count as f64)
-}
 
-fn kernel_density(data: &[f64], x: f64, bandwidth: f64) -> f64 {
-    let normal = StatsrsNormal::new(0.0, bandwidth).unwrap();
-    let density: f64 = data.par_iter().map(|&value| normal.pdf((x - value) / bandwidth)).sum();
-    density / (data.len() as f64 * bandwidth)
-}
-
-fn jensen_shannon_similarity(x: &Array1<f64>, y: &Array1<f64>, bandwidth: f64) -> f64 {
-    assert_eq!(x.len(), y.len());
-    let n = x.len() as f64;
-    let x_slice = x.as_slice().unwrap();
-    let y_slice = y.as_slice().unwrap();
-    let jsd: f64 = x_slice.par_iter().enumerate().map(|(i, &xi)| {
-        let p_x = kernel_density(x_slice, xi, bandwidth);
-        let p_y = kernel_density(y_slice, y_slice[i], bandwidth);
-        let m = 0.5 * (p_x + p_y);
-        if m > 0.0 {
-            0.5 * (p_x * (p_x / m).ln() + p_y * (p_y / m).ln()) / n
-        } else {
-            0.0
-        }
-    }).sum();
-    let jenson_shannon_similarity = 1.0 - jsd;
-    jenson_shannon_similarity
-}
-
-fn double_centering(matrix: &mut Array2<f64>) {
-    let n = matrix.nrows();
-    let row_means = matrix.mean_axis(Axis(1)).unwrap();
-    let grand_mean = row_means.mean().unwrap();
-    let row_means_with_axis = row_means.insert_axis(Axis(1));
-    let row_means_broadcasted = row_means_with_axis.broadcast((n, n)).unwrap();
-    let col_means_broadcasted = row_means_broadcasted.t();
-    *matrix -= &row_means_broadcasted;
-    *matrix -= &col_means_broadcasted;
-    *matrix += grand_mean;
+    let jsd = 0.5 * (kl1 + kl2) / ln2; // Normalize by ln(2) to get value between 0 and 1
+    
+    jsd
 }
 
 fn distance_matrix_one_d(data: &Array1<f64>) -> Array2<f64> {
-    let data_column = data.view().insert_axis(Axis(1));
-    let data_row = data.view().insert_axis(Axis(0));
-    let distance = &data_column - &data_row;
-    distance.mapv(f64::abs)
+    let n = data.len();
+    let mut distance = Array2::<f64>::zeros((n, n));
+    distance.axis_iter_mut(Axis(0)).enumerate().for_each(|(i, mut row)| {
+        row.iter_mut().enumerate().for_each(|(j, elem)| {
+            *elem = (data[i] - data[j]).abs();
+        });
+    });
+    distance
 }
 
-fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
-    let subset_size = 1000;
-    let actual_subset_size = std::cmp::min(subset_size, x.len());
-    let subset_indices: Vec<usize> = (0..x.len()).choose_multiple(&mut rand::thread_rng(), actual_subset_size);
-    let x_subset: Array1<f64> = Array1::from(subset_indices.iter().map(|&i| x[i]).collect::<Vec<_>>());
-    let y_subset: Array1<f64> = Array1::from(subset_indices.iter().map(|&i| y[i]).collect::<Vec<_>>());
+pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    let subset_size = 1000.min(x.len());
+    let mut rng = rand::thread_rng();
+    let subset_indices: Vec<usize> = (0..x.len()).choose_multiple(&mut rng, subset_size);
+    let x_subset = x.select(Axis(0), &subset_indices);
+    let y_subset = y.select(Axis(0), &subset_indices);
+
     let mut a_matrix = distance_matrix_one_d(&x_subset);
     let mut b_matrix = distance_matrix_one_d(&y_subset);
+
+    // Optimize double centering using vectorized operations
+    fn double_centering(matrix: &mut Array2<f64>) {
+        let row_means = matrix.mean_axis(Axis(1)).unwrap();
+        let col_means = matrix.mean_axis(Axis(0)).unwrap();
+        let grand_mean = row_means.mean().unwrap();
+
+        ndarray::Zip::from(matrix.rows_mut())
+            .and(&row_means)
+            .for_each(|mut row, &row_mean| {
+                row -= &col_means;
+                row += grand_mean;
+                row -= row_mean;
+            });
+    }
+
     double_centering(&mut a_matrix);
     double_centering(&mut b_matrix);
-    let distance_covariance_sq = (a_matrix.clone() * b_matrix.clone()).sum() / (actual_subset_size * actual_subset_size) as f64;
-    let distance_variance_x_sq = (a_matrix.clone() * a_matrix).sum() / (actual_subset_size * actual_subset_size) as f64;
-    let distance_variance_y_sq = (b_matrix.clone() * b_matrix).sum() / (actual_subset_size * actual_subset_size) as f64;
-    if distance_variance_x_sq == 0.0 || distance_variance_y_sq == 0.0 {
+
+    let distance_covariance = (&a_matrix * &b_matrix).mean().unwrap();
+    let distance_variance_x = (&a_matrix * &a_matrix).mean().unwrap();
+    let distance_variance_y = (&b_matrix * &b_matrix).mean().unwrap();
+
+    if distance_variance_x <= 0.0 || distance_variance_y <= 0.0 {
         return 0.0;
     }
-    // Return the computed distance correlation
-    (distance_covariance_sq / (distance_variance_x_sq * distance_variance_y_sq).sqrt()).sqrt()
+
+    (distance_covariance / (distance_variance_x * distance_variance_y).sqrt()).sqrt()
 }
 
-fn hoeffd_inner_loop_func(i: usize, r: &Array1<f64>, s: &Array1<f64>) -> f64 {
-    let mut q_i = 1.0 + r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < r[i] && *s_val < s[i]).count() as f64;
-    q_i += 0.25 * (r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == r[i] && *s_val == s[i]).count() as f64 - 1.0);
-    q_i += 0.5 * r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == r[i] && *s_val < s[i]).count() as f64;
-    q_i += 0.5 * r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < r[i] && *s_val == s[i]).count() as f64;
-    q_i
+fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
 }
 
-fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     let n = x.len() as f64;
-    let r = Array1::from(average_rank(&x.to_vec()));
-    let s = Array1::from(average_rank(&y.to_vec()));
-    let q: Array1<f64> = Array1::from((0..x.len()).into_par_iter().map(|i| hoeffd_inner_loop_func(i, &r, &s)).collect::<Vec<f64>>());
-    let d1: f64 = (q.clone() - 1.0).mapv(|v| v * (v - 2.0)).sum();
-    let d2: f64 = (r.clone() - 1.0).mapv(|v| v * (v - 2.0)).iter().zip((s.clone() - 1.0).mapv(|v| v * (v - 2.0)).iter()).map(|(a, b)| a * b).sum();
-    let d3: f64 = (r.clone() - 2.0).iter().zip((s.clone() - 2.0).iter()).zip((q.clone() - 1.0).iter()).map(|((a, b), c)| a * b * c).sum();
-    let d: f64 = 30.0 * ((n - 2.0) * (n - 3.0) * d1 + d2 - 2.0 * (n - 2.0) * d3)
-        / (n * (n - 1.0) * (n - 2.0) * (n - 3.0) * (n - 4.0));
-    d
+    let r = Array1::from(average_rank(x.as_slice().unwrap()));
+    let s = Array1::from(average_rank(y.as_slice().unwrap()));
+
+    // Precompute necessary arrays
+    let r_minus = &r - 1.0;
+    let s_minus = &s - 1.0;
+
+    let q_vec: Vec<f64> = (0..x.len())
+        .into_par_iter()
+        .map(|i| {
+            let ri = r[i];
+            let si = s[i];
+            let less_than = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < ri && *s_val < si).count() as f64;
+            let equal_both = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == ri && *s_val == si).count() as f64 - 1.0;
+            let equal_r = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == ri && *s_val < si).count() as f64;
+            let equal_s = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < ri && *s_val == si).count() as f64;
+            1.0 + less_than + 0.25 * equal_both + 0.5 * (equal_r + equal_s)
+        })
+        .collect();
+
+    let q = Array1::from(q_vec);
+    let q_minus = &q - 1.0;
+
+    let d1 = q_minus.mapv(|v| v * (v - 2.0)).sum();
+    let r_component = r_minus.mapv(|v| v * (v - 1.0));
+    let s_component = s_minus.mapv(|v| v * (v - 1.0));
+
+    let d2 = dot_product(&r_component, &s_component);
+    let d3 = r_minus
+        .iter()
+        .zip(s_minus.iter())
+        .zip(q_minus.iter())
+        .map(|((&a, &b), &c)| a * b * c)
+        .sum::<f64>();
+
+    let denom = n * (n - 1.0) * (n - 2.0) * (n - 3.0) * (n - 4.0);
+    let numerator = 30.0 * ((n - 2.0) * (n - 3.0) * d1 + d2 - 2.0 * (n - 2.0) * d3);
+    numerator / denom
 }
 
-fn skewness(data: &Array1<f64>) -> f64 {
-    let mean = data.mean().unwrap();
-    let variance = data.var(0.);
-    let std_dev = variance.sqrt();
-    let n = data.len() as f64;
-    let sum_cubed_deviations: f64 = data.iter().map(|&x| (x - mean).powi(3)).sum();
-    sum_cubed_deviations / (n * std_dev.powi(3))
+pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    assert_eq!(x.len(), y.len());
+    let n = x.len() as f64;
+    let num_bins = 20;
+
+    // Compute bin edges for x and y
+    let x_min = x.into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let x_max = x.into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let y_min = y.into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let y_max = y.into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+
+    // Initialize histograms using ndarray
+    let mut joint_hist = Array2::<usize>::zeros((num_bins, num_bins));
+    let mut x_hist = Array1::<usize>::zeros(num_bins);
+    let mut y_hist = Array1::<usize>::zeros(num_bins);
+
+    // Assign data to bins and compute histograms
+    x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
+        // Find bin index for xi and yi
+        let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
+        let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
+        let x_bin = x_bin.min(num_bins - 1);
+        let y_bin = y_bin.min(num_bins - 1);
+
+        joint_hist[(x_bin, y_bin)] += 1;
+        x_hist[x_bin] += 1;
+        y_hist[y_bin] += 1;
+    });
+
+    // Compute entropies
+    let h_x = x_hist
+        .iter()
+        .filter_map(|&count| {
+            if count > 0 {
+                let p = count as f64 / n;
+                Some(-p * p.ln())
+            } else {
+                None
+            }
+        })
+        .sum::<f64>();
+
+    let h_y = y_hist
+        .iter()
+        .filter_map(|&count| {
+            if count > 0 {
+                let p = count as f64 / n;
+                Some(-p * p.ln())
+            } else {
+                None
+            }
+        })
+        .sum::<f64>();
+
+    let h_xy = joint_hist
+        .iter()
+        .filter_map(|&count| {
+            if count > 0 {
+                let p = count as f64 / n;
+                Some(-p * p.ln())
+            } else {
+                None
+            }
+        })
+        .sum::<f64>();
+
+    let mi = h_x + h_y - h_xy;
+
+    // Compute NMI using average of entropies
+    let nmi = mi / ((h_x + h_y) / 2.0);
+
+    nmi
 }
 
 pub fn compute_vector_similarity_stats(
@@ -166,34 +372,22 @@ pub fn compute_vector_similarity_stats(
     assert_eq!(vector_1.len(), vector_2.len());
     let input_vector_dimensions = vector_1.len();
 
-    // Standard deviation for both vectors
-    let std_dev_1 = vector_1.std(0.);
-    let std_dev_2 = vector_2.std(0.);
-
-    // Silverman's rule for both vectors
-    let bandwidth_1 = (4.0 * std_dev_1.powf(5.0) / (3.0 * (input_vector_dimensions as f64))).powf(1.0 / 5.0);
-    let bandwidth_2 = (4.0 * std_dev_2.powf(5.0) / (3.0 * (input_vector_dimensions as f64))).powf(1.0 / 5.0);
-    // Use the weighted average of the bandwidths where we weight the bandwidths by the skewness of the vectors, since the skewness is a measure of how non-Gaussian the distribution is and the bandwidth is a measure of the spread of the distribution
-    let skewness_1 = skewness(&vector_1);
-    let skewness_2 = skewness(&vector_2);
-    let total_skewness = skewness_1.abs() + skewness_2.abs();
-    let weight_1 = skewness_1.abs() / total_skewness;
-    let weight_2 = skewness_2.abs() / total_skewness;
-    let bandwidth = bandwidth_1 * weight_1 + bandwidth_2 * weight_2;
-
     let similarity_measure = similarity_measure.unwrap_or("all");
-    let mut computations: Vec<(Box<dyn Fn() -> f64 + Send>, &str)> = Vec::new();
+    let mut computations: Vec<(Box<dyn Fn() -> f64 + Send + Sync>, &str)> = Vec::new();
     if similarity_measure == "spearman_rho" || similarity_measure == "all" {
-        computations.push((Box::new(|| spearman_rho(&vector_1.to_vec(), &vector_2.to_vec())), "spearman_rho"));
+        computations.push((Box::new(|| spearman_rho(vector_1.as_slice().unwrap(), vector_2.as_slice().unwrap())), "spearman_rho"));
     }
     if similarity_measure == "kendall_tau" || similarity_measure == "all" {
-        computations.push((Box::new(|| kendall_tau(&vector_1.to_vec(), &vector_2.to_vec())), "kendall_tau"));
+        computations.push((Box::new(|| kendall_tau(vector_1.as_slice().unwrap(), vector_2.as_slice().unwrap())), "kendall_tau"));
     }
     if similarity_measure == "approximate_distance_correlation" || similarity_measure == "all" {
         computations.push((Box::new(|| approximate_distance_correlation(&vector_1, &vector_2)), "approximate_distance_correlation"));
     }
-    if similarity_measure == "jensen_shannon_similarity" || similarity_measure == "all" {
-        computations.push((Box::new(|| jensen_shannon_similarity(&vector_1, &vector_2, bandwidth)), "jensen_shannon_similarity"));
+    if similarity_measure == "jensen_shannon_dependency_measure" || similarity_measure == "all" {
+        computations.push((Box::new(|| jensen_shannon_dependency_measure(&vector_1, &vector_2)), "jensen_shannon_dependency_measure"));
+    }
+    if similarity_measure == "normalized_mutual_information" || similarity_measure == "all" {
+        computations.push((Box::new(|| normalized_mutual_information(&vector_1, &vector_2)), "normalized_mutual_information"));
     }
     if similarity_measure == "hoeffding_d" || similarity_measure == "all" {
         computations.push((Box::new(|| exact_hoeffdings_d_func(&vector_1, &vector_2)), "hoeffding_d"));
@@ -216,16 +410,13 @@ fn generate_bootstrap_sample_func(original_length_of_input: usize, sample_size: 
 
 fn compute_average_and_stdev_of_25th_to_75th_percentile_func(input_vector: &Array1<f64>) -> (f64, f64) {
     let mut sorted_vector = input_vector.to_vec();
-    sorted_vector.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let percentile_25 = sorted_vector[input_vector.len() / 4];
-    let percentile_75 = sorted_vector[3 * input_vector.len() / 4];
-    let trimmed_vector: Array1<f64> = input_vector
-        .iter()
-        .filter(|&&x| x > percentile_25 && x < percentile_75)
-        .cloned()
-        .collect();
-    let trimmed_vector_avg = trimmed_vector.mean().unwrap();
-    let trimmed_vector_stdev = trimmed_vector.std(0.);
+    sorted_vector.par_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let lower_idx = input_vector.len() / 4;
+    let upper_idx = 3 * input_vector.len() / 4;
+    let trimmed_vector = &sorted_vector[lower_idx..upper_idx];
+    let trimmed_array = Array1::from(trimmed_vector.to_vec());
+    let trimmed_vector_avg = trimmed_array.mean().unwrap();
+    let trimmed_vector_stdev = trimmed_array.std(0.);
     (trimmed_vector_avg, trimmed_vector_stdev)
 }
 
@@ -252,8 +443,9 @@ pub fn compute_bootstrapped_similarity_stats(
         "spearman_rho",
         "kendall_tau",
         "approximate_distance_correlation",
-        "jensen_shannon_similarity",
+        "jensen_shannon_dependency_measure",
         "hoeffding_d",
+        "normalized_mutual_information",
     ];
     let mut bootstrapped_similarity_stats = json!({
         "number_of_bootstraps": number_of_bootstraps,
@@ -280,7 +472,7 @@ fn py_compute_vector_similarity_stats(_py: Python, json_params: &str) -> PyResul
         let vector_2_vec: Vec<f64> = params["vector_2"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         let vector_2 = Array1::from(vector_2_vec);
 
-        let similarity_measure = params["similarity_measure"].as_str();
+        let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
 
         let result = compute_vector_similarity_stats(&vector_1, &vector_2, similarity_measure);
 
@@ -306,7 +498,7 @@ fn py_compute_bootstrapped_similarity_stats(_py: Python, json_params: &str) -> P
 
         let sample_size = params["sample_size"].as_u64().unwrap() as usize;
         let number_of_bootstraps = params["number_of_bootstraps"].as_u64().unwrap() as usize;
-        let similarity_measure = params["similarity_measure"].as_str();
+        let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
 
         let result = compute_bootstrapped_similarity_stats(&x, &y, sample_size, number_of_bootstraps, similarity_measure);
 
