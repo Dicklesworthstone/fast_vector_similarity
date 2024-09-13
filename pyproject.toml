@@ -11,12 +11,11 @@ authors = [{ name = "Jeffrey Emanuel", email = "jeff@pastel.network" }]
 readme = "README.md"
 repository = "https://github.com/Dicklesworthstone/fast_vector_similarity"
 classifiers = [
-    "Development Status :: 3 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
