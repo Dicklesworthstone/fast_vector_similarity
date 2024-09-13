@@ -63,4 +63,9 @@ jobs:
         run: pip install twine
 
       - name: Publish to PyPI
-        run: twine upload wheels/*/*.whl --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload wheels/*.whl --username "__token__" --password ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: List directory contents (for debugging)
+        if: failure()
+        run: |
+          ls -R wheels
