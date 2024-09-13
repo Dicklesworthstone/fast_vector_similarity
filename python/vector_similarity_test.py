@@ -58,7 +58,8 @@ def main():
     print("Spearman's rho:", similarity_stats_json["spearman_rho"])
     print("Kendall's tau:", similarity_stats_json["kendall_tau"])
     print("Distance Correlation:", similarity_stats_json["approximate_distance_correlation"])
-    print("Jensen-Shannon Similarity:", similarity_stats_json["jensen_shannon_similarity"])
+    print("Jensen-Shannon Dependency Measure:", similarity_stats_json["jensen_shannon_dependency_measure"])
+    print("Normalized Mutual Information:", similarity_stats_json["normalized_mutual_information"])
     print("Hoeffding's D:", similarity_stats_json["hoeffding_d"])
     print("_______________________________________________________________________________________________________________________________________________\n")
 
@@ -91,12 +92,13 @@ def main():
     print("\nRobust Spearman's rho:", bootstrapped_similarity_stats_json["spearman_rho"])
     print("Robust Kendall's tau:", bootstrapped_similarity_stats_json["kendall_tau"])
     print("Robust Distance Correlation:", bootstrapped_similarity_stats_json["approximate_distance_correlation"])
-    print("Robust Jensen-Shannon Similarity:", bootstrapped_similarity_stats_json["jensen_shannon_similarity"])
+    print("Robust Jensen-Shannon  Dependency Measure:", bootstrapped_similarity_stats_json["jensen_shannon_dependency_measure"])
+    print("Robust Normalized Mutual Information:", bootstrapped_similarity_stats_json["normalized_mutual_information"])
     print("Robust Hoeffding's D:", bootstrapped_similarity_stats_json["hoeffding_d"])
     print("_______________________________________________________________________________________________________________________________________________\n")
 
     # Compute the differences between exact and bootstrapped results
-    measures = ["spearman_rho", "kendall_tau", "approximate_distance_correlation", "jensen_shannon_similarity", "hoeffding_d"]
+    measures = ["spearman_rho", "kendall_tau", "approximate_distance_correlation", "jensen_shannon_dependency_measure", "normalized_mutual_information", "hoeffding_d"]
     for measure in measures:
         exact_value = similarity_stats_json[measure]
         bootstrapped_value = bootstrapped_similarity_stats_json[measure]
@@ -127,7 +129,7 @@ def main():
     vector_similarity_results_df.index = embeddings_df.index
 
     # Add the required columns to the DataFrame
-    columns = ["spearman_rho", "kendall_tau", "approximate_distance_correlation", "jensen_shannon_similarity", "hoeffding_d"]
+    columns = ["spearman_rho", "kendall_tau", "approximate_distance_correlation", "jensen_shannon_dependency_measure", "normalized_mutual_information", "hoeffding_d"]
     vector_similarity_results_df = vector_similarity_results_df[columns]
     
     # Sort the DataFrame by the hoeffding_d column in descending order

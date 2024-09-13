@@ -1,9 +1,11 @@
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray::prelude::*;
+use ndarray::Array1;
 use rayon::prelude::*;
 use serde_json::json;
-use rand::seq::IteratorRandom; // To select random indices
+use rand::prelude::SliceRandom;
+use rand::seq::IteratorRandom;
 use std::error::Error;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -122,76 +124,76 @@ pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
 
 pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     assert_eq!(x.len(), y.len());
-    let n = x.len() as f64;
+    let _n = x.len() as f64;
     let num_bins: usize = 20;
 
-    // Compute bin edges for x and y
-    let x_min = x.iter().cloned().fold(f64::INFINITY, f64::min);
-    let x_max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let y_min = y.iter().cloned().fold(f64::INFINITY, f64::min);
-    let y_max = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let compute_jsd = |x: &Array1<f64>, y: &Array1<f64>, num_bins: usize| -> f64 {
+        let x_min = x.iter().cloned().fold(f64::INFINITY, f64::min);
+        let x_max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_min = y.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-    // Initialize histograms
-    let mut joint_hist = vec![vec![0f64; num_bins]; num_bins];
-    let mut x_hist = vec![0f64; num_bins];
-    let mut y_hist = vec![0f64; num_bins];
+        let mut joint_hist = vec![vec![0f64; num_bins]; num_bins];
+        let mut x_hist = vec![0f64; num_bins];
+        let mut y_hist = vec![0f64; num_bins];
 
-    // Assign data to bins and compute histograms
-    x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
-        // Find bin index for xi and yi
-        let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
-        let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
-        let x_bin = x_bin.min(num_bins - 1);
-        let y_bin = y_bin.min(num_bins - 1);
+        x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
+            let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
+            let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
+            let x_bin = x_bin.min(num_bins - 1);
+            let y_bin = y_bin.min(num_bins - 1);
 
-        joint_hist[x_bin][y_bin] += 1.0;
-        x_hist[x_bin] += 1.0;
-        y_hist[y_bin] += 1.0;
-    });
+            joint_hist[x_bin][y_bin] += 1.0;
+            x_hist[x_bin] += 1.0;
+            y_hist[y_bin] += 1.0;
+        });
 
-    // Normalize histograms to get probability distributions
-    let p_x: Vec<f64> = x_hist.iter().map(|&count| count / n).collect();
-    let p_y: Vec<f64> = y_hist.iter().map(|&count| count / n).collect();
-    let p_xy: Vec<Vec<f64>> = joint_hist
-        .iter()
-        .map(|row| row.iter().map(|&count| count / n).collect())
-        .collect();
+        let p_x: Vec<f64> = x_hist.iter().map(|&count| count / _n).collect();
+        let p_y: Vec<f64> = y_hist.iter().map(|&count| count / _n).collect();
+        let p_xy: Vec<Vec<f64>> = joint_hist.iter().map(|row| row.iter().map(|&count| count / _n).collect()).collect();
 
-    // Compute P(X) * P(Y)
-    let mut p_x_p_y = vec![vec![0f64; num_bins]; num_bins];
-    for i in 0..num_bins {
-        for j in 0..num_bins {
-            p_x_p_y[i][j] = p_x[i] * p_y[j];
-        }
-    }
-
-    // Compute M = 0.5 * (P(X,Y) + P(X)P(Y))
-    let mut m = vec![vec![0f64; num_bins]; num_bins];
-    for i in 0..num_bins {
-        for j in 0..num_bins {
-            m[i][j] = 0.5 * (p_xy[i][j] + p_x_p_y[i][j]);
-        }
-    }
-
-    // Compute KL divergences
-    let mut kl1 = 0.0;
-    let mut kl2 = 0.0;
-    let ln2 = std::f64::consts::LN_2;
-
-    for i in 0..num_bins {
-        for j in 0..num_bins {
-            if p_xy[i][j] > 0.0 {
-                kl1 += p_xy[i][j] * (p_xy[i][j] / m[i][j]).ln();
-            }
-            if p_x_p_y[i][j] > 0.0 {
-                kl2 += p_x_p_y[i][j] * (p_x_p_y[i][j] / m[i][j]).ln();
+        let mut p_x_p_y = vec![vec![0f64; num_bins]; num_bins];
+        for i in 0..num_bins {
+            for j in 0..num_bins {
+                p_x_p_y[i][j] = p_x[i] * p_y[j];
             }
         }
-    }
 
-    let jsd = 0.5 * (kl1 + kl2) / ln2; // Normalize by ln(2) to get value between 0 and 1
-    
-    jsd
+        let mut m = vec![vec![0f64; num_bins]; num_bins];
+        for i in 0..num_bins {
+            for j in 0..num_bins {
+                m[i][j] = 0.5 * (p_xy[i][j] + p_x_p_y[i][j]);
+            }
+        }
+
+        let mut kl1 = 0.0;
+        let mut kl2 = 0.0;
+        for i in 0..num_bins {
+            for j in 0..num_bins {
+                if p_xy[i][j] > 0.0 {
+                    kl1 += p_xy[i][j] * (p_xy[i][j] / m[i][j]).ln();
+                }
+                if p_x_p_y[i][j] > 0.0 {
+                    kl2 += p_x_p_y[i][j] * (p_x_p_y[i][j] / m[i][j]).ln();
+                }
+            }
+        }
+
+        0.5 * (kl1 + kl2) / std::f64::consts::LN_2
+    };
+
+    let jsd_observed = compute_jsd(x, y, num_bins);
+
+    // Shuffle y to estimate expected JSD under independence
+    let mut y_shuffled_vec = y.to_vec();
+    let mut rng = rand::thread_rng();
+    y_shuffled_vec.shuffle(&mut rng);
+    let y_shuffled = Array1::from(y_shuffled_vec);
+
+    let jsd_independent = compute_jsd(x, &y_shuffled, num_bins);
+
+    let dependency = (jsd_observed - jsd_independent) / (1.0 - jsd_independent);
+    dependency.max(0.0).min(1.0) // Ensure the value is between 0 and 1
 }
 
 fn distance_matrix_one_d(data: &Array1<f64>) -> Array2<f64> {
