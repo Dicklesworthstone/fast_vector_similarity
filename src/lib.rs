@@ -275,14 +275,16 @@ pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     let q = Array1::from(q_vec);
     let q_minus = &q - 1.0;
 
-    let d1 = q_minus.mapv(|v| v * (v - 2.0)).sum();
+    let d1 = q_minus.mapv(|v| v * (v - 1.0)).sum();
     let r_component = r_minus.mapv(|v| v * (v - 1.0));
     let s_component = s_minus.mapv(|v| v * (v - 1.0));
 
     let d2 = dot_product(&r_component, &s_component);
-    let d3 = r_minus
+    let r_minus2 = &r - 2.0;
+    let s_minus2 = &s - 2.0;
+    let d3 = r_minus2
         .iter()
-        .zip(s_minus.iter())
+        .zip(s_minus2.iter())
         .zip(q_minus.iter())
         .map(|((&a, &b), &c)| a * b * c)
         .sum::<f64>();
