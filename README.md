@@ -228,7 +228,9 @@ Install the Python package and use the exposed functions to compute vector simil
 
 ### Non-finite and undefined values
 
-Input vectors must have equal lengths. The Rust scalar similarity functions return
+Input vectors must have equal lengths; the Rust APIs assert this precondition, and
+the Python wrappers raise `ValueError` when it is violated. The Rust scalar
+similarity functions return
 `f64::NAN` if either vector is empty or contains `NaN`, positive infinity, or negative
 infinity. They do not discard, replace, or rank non-finite observations. Validation
 covers the complete vectors before distance-correlation subsampling or bootstrapping.
@@ -252,6 +254,29 @@ for malformed JSON (including `NaN`, `Infinity`, and out-of-range numeric litera
 missing or non-array vectors, `null` or nonnumeric vector elements, unequal lengths,
 and non-positive or invalid bootstrap counts/sizes. Undefined results from valid
 finite inputs are returned as JSON `null`, which `json.loads` converts to `None`.
+
+### Finite scales and array layouts
+
+NMI and the Jensen-Shannon dependency measure use the same equal-width binning
+rule. Constant vectors occupy one bin; nonconstant vectors are normalized by
+their actual range. This preserves tiny and subnormal differences and handles
+opposite-sign finite extremes without adding a fixed epsilon to the range.
+
+Distance correlation normalizes each sampled vector independently before forming
+distance matrices. Translation and scaling preserve the statistic, while bounded
+coordinates keep the distance variances stable across tiny and huge overall scales.
+Covariance and variance sums are accumulated together without temporary product
+matrices. The existing convention of zero distance correlation for a constant
+sample is preserved.
+
+All Rust entry points taking `Array1<f64>` support reversed and strided owned
+arrays. Computation follows logical element order, preserving observation pairs
+and ignoring unused backing-storage elements. Contiguous data is borrowed when a
+rank function needs a slice; other layouts are copied in logical order.
+
+JSON float parsing uses Serde's `float_roundtrip` mode so serialized `f64` values
+retain their distinctions, including adjacent representable values. This matters
+for both rank ties and finite-range normalization at the Python boundary.
 
 ---
 

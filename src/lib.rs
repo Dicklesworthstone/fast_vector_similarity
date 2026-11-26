@@ -10,9 +10,59 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use serde_json::Value;
+use std::borrow::Cow;
 
 fn has_non_finite<'a>(mut values: impl Iterator<Item = &'a f64>) -> bool {
     values.any(|value| !value.is_finite())
+}
+
+// A unit-interval coordinate system for nonempty, finite observations. Subtract
+// before dividing to preserve nearby values at large offsets. Only halve when
+// the range overflows; always halving would lose subnormal observations.
+struct FiniteRange {
+    minimum: f64,
+    width: f64,
+    halve: bool,
+}
+
+impl FiniteRange {
+    fn new(values: &Array1<f64>) -> Self {
+        let (minimum, maximum) = values.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(min, max), &value| (min.min(value), max.max(value)),
+        );
+        let width = maximum - minimum;
+        if width.is_infinite() {
+            Self {
+                minimum: minimum * 0.5,
+                width: maximum * 0.5 - minimum * 0.5,
+                halve: true,
+            }
+        } else {
+            Self { minimum, width, halve: false }
+        }
+    }
+
+    fn position(&self, value: f64) -> f64 {
+        if self.width == 0.0 {
+            return 0.0;
+        }
+        let value = if self.halve { value * 0.5 } else { value };
+        ((value - self.minimum) / self.width).clamp(0.0, 1.0)
+    }
+
+    fn bin(&self, value: f64, num_bins: usize) -> usize {
+        ((self.position(value) * num_bins as f64) as usize).min(num_bins - 1)
+    }
+}
+
+fn logical_values(values: &Array1<f64>) -> Cow<'_, [f64]> {
+    match values.as_slice() {
+        Some(slice) => Cow::Borrowed(slice),
+        // Owned arrays may have negative or non-unit strides. Preserve logical
+        // order so observations in the two vectors remain paired correctly.
+        None => Cow::Owned(values.iter().copied().collect()),
+    }
 }
 
 fn average_rank(data: &[f64]) -> Vec<f64> {
@@ -175,33 +225,28 @@ pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f6
     if x.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
-    let _n = x.len() as f64;
+    let n = x.len() as f64;
     let num_bins: usize = 20;
+    let x_range = FiniteRange::new(x);
+    let y_range = FiniteRange::new(y);
+    let x_bins: Vec<usize> = x.iter().map(|&value| x_range.bin(value, num_bins)).collect();
+    let mut y_bins: Vec<usize> = y.iter().map(|&value| y_range.bin(value, num_bins)).collect();
 
-    let compute_jsd = |x: &Array1<f64>, y: &Array1<f64>, num_bins: usize| -> f64 {
-        let x_min = x.iter().cloned().fold(f64::INFINITY, f64::min);
-        let x_max = x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let y_min = y.iter().cloned().fold(f64::INFINITY, f64::min);
-        let y_max = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let compute_jsd = |y_bins: &[usize]| -> f64 {
 
         let mut joint_hist = vec![vec![0f64; num_bins]; num_bins];
         let mut x_hist = vec![0f64; num_bins];
         let mut y_hist = vec![0f64; num_bins];
 
-        x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
-            let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
-            let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
-            let x_bin = x_bin.min(num_bins - 1);
-            let y_bin = y_bin.min(num_bins - 1);
-
+        x_bins.iter().zip(y_bins.iter()).for_each(|(&x_bin, &y_bin)| {
             joint_hist[x_bin][y_bin] += 1.0;
             x_hist[x_bin] += 1.0;
             y_hist[y_bin] += 1.0;
         });
 
-        let p_x: Vec<f64> = x_hist.iter().map(|&count| count / _n).collect();
-        let p_y: Vec<f64> = y_hist.iter().map(|&count| count / _n).collect();
-        let p_xy: Vec<Vec<f64>> = joint_hist.iter().map(|row| row.iter().map(|&count| count / _n).collect()).collect();
+        let p_x: Vec<f64> = x_hist.iter().map(|&count| count / n).collect();
+        let p_y: Vec<f64> = y_hist.iter().map(|&count| count / n).collect();
+        let p_xy: Vec<Vec<f64>> = joint_hist.iter().map(|row| row.iter().map(|&count| count / n).collect()).collect();
 
         let mut p_x_p_y = vec![vec![0f64; num_bins]; num_bins];
         for i in 0..num_bins {
@@ -233,15 +278,14 @@ pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f6
         0.5 * (kl1 + kl2) / std::f64::consts::LN_2
     };
 
-    let jsd_observed = compute_jsd(x, y, num_bins);
+    let jsd_observed = compute_jsd(&y_bins);
 
-    // Shuffle y to estimate expected JSD under independence
-    let mut y_shuffled_vec = y.to_vec();
+    // Shuffling bin labels is equivalent to shuffling y, and reuses the same
+    // discretization without repeating range scans or floating-point binning.
     let mut rng = rand::thread_rng();
-    y_shuffled_vec.shuffle(&mut rng);
-    let y_shuffled = Array1::from(y_shuffled_vec);
+    y_bins.shuffle(&mut rng);
 
-    let jsd_independent = compute_jsd(x, &y_shuffled, num_bins);
+    let jsd_independent = compute_jsd(&y_bins);
 
     let dependency = (jsd_observed - jsd_independent) / (1.0 - jsd_independent);
     dependency.max(0.0).min(1.0) // Ensure the value is between 0 and 1
@@ -261,14 +305,22 @@ fn distance_matrix_one_d(data: &Array1<f64>) -> Array2<f64> {
 /// Returns NaN for empty inputs or any NaN or infinite observation, even outside
 /// the randomly selected subset.
 pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    assert_eq!(x.len(), y.len());
     if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
     let subset_size = 1000.min(x.len());
     let mut rng = rand::thread_rng();
     let subset_indices: Vec<usize> = (0..x.len()).choose_multiple(&mut rng, subset_size);
-    let x_subset = x.select(Axis(0), &subset_indices);
-    let y_subset = y.select(Axis(0), &subset_indices);
+    let mut x_subset = x.select(Axis(0), &subset_indices);
+    let mut y_subset = y.select(Axis(0), &subset_indices);
+    // Distance correlation is invariant under independent translation and
+    // positive rescaling. Bounded coordinates keep distances and their squares
+    // finite without collapsing tiny, nonconstant vectors to zero variance.
+    let x_range = FiniteRange::new(&x_subset);
+    let y_range = FiniteRange::new(&y_subset);
+    x_subset.mapv_inplace(|value| x_range.position(value));
+    y_subset.mapv_inplace(|value| y_range.position(value));
 
     let mut a_matrix = distance_matrix_one_d(&x_subset);
     let mut b_matrix = distance_matrix_one_d(&y_subset);
@@ -291,15 +343,22 @@ pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64
     double_centering(&mut a_matrix);
     double_centering(&mut b_matrix);
 
-    let distance_covariance = (&a_matrix * &b_matrix).mean().unwrap();
-    let distance_variance_x = (&a_matrix * &a_matrix).mean().unwrap();
-    let distance_variance_y = (&b_matrix * &b_matrix).mean().unwrap();
+    // The common sample-size factors cancel during normalization. Accumulate
+    // all three sums together, avoiding three temporary n-by-n product arrays.
+    let (distance_covariance, distance_variance_x, distance_variance_y) = a_matrix
+        .iter()
+        .zip(b_matrix.iter())
+        .fold((0.0, 0.0, 0.0), |(cov, var_x, var_y), (&a, &b)| {
+            (cov + a * b, var_x + a * a, var_y + b * b)
+        });
 
     if distance_variance_x <= 0.0 || distance_variance_y <= 0.0 {
         return 0.0;
     }
 
-    (distance_covariance / (distance_variance_x * distance_variance_y).sqrt()).sqrt()
+    (distance_covariance / distance_variance_x.sqrt() / distance_variance_y.sqrt())
+        .clamp(0.0, 1.0)
+        .sqrt()
 }
 
 fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
@@ -308,12 +367,13 @@ fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
 
 /// Returns NaN for empty inputs or any NaN or infinite observation.
 pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    assert_eq!(x.len(), y.len());
     if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
     let n = x.len() as f64;
-    let r = Array1::from(average_rank(x.as_slice().unwrap()));
-    let s = Array1::from(average_rank(y.as_slice().unwrap()));
+    let r = Array1::from(average_rank(&logical_values(x)));
+    let s = Array1::from(average_rank(&logical_values(y)));
 
     // Precompute necessary arrays
     let r_minus = &r - 1.0;
@@ -364,15 +424,8 @@ pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     let n = x.len() as f64;
     let num_bins = 20;
 
-    // Compute bin edges for x and y
-    let (x_min, x_max) = x.iter().fold(
-        (f64::INFINITY, f64::NEG_INFINITY),
-        |(min, max), &value| (min.min(value), max.max(value)),
-    );
-    let (y_min, y_max) = y.iter().fold(
-        (f64::INFINITY, f64::NEG_INFINITY),
-        |(min, max), &value| (min.min(value), max.max(value)),
-    );
+    let x_range = FiniteRange::new(x);
+    let y_range = FiniteRange::new(y);
 
     // Initialize histograms using ndarray
     let mut joint_hist = Array2::<usize>::zeros((num_bins, num_bins));
@@ -382,10 +435,8 @@ pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     // Assign data to bins and compute histograms
     x.iter().zip(y.iter()).for_each(|(&xi, &yi)| {
         // Find bin index for xi and yi
-        let x_bin = ((xi - x_min) / (x_max - x_min + 1e-10) * num_bins as f64).floor() as usize;
-        let y_bin = ((yi - y_min) / (y_max - y_min + 1e-10) * num_bins as f64).floor() as usize;
-        let x_bin = x_bin.min(num_bins - 1);
-        let y_bin = y_bin.min(num_bins - 1);
+        let x_bin = x_range.bin(xi, num_bins);
+        let y_bin = y_range.bin(yi, num_bins);
 
         joint_hist[(x_bin, y_bin)] += 1;
         x_hist[x_bin] += 1;
@@ -432,9 +483,10 @@ pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     let mi = h_x + h_y - h_xy;
 
     // Compute NMI using average of entropies
-    let nmi = mi / ((h_x + h_y) / 2.0);
-
-    nmi
+    if h_x + h_y == 0.0 {
+        return f64::NAN;
+    }
+    (mi / ((h_x + h_y) / 2.0)).clamp(0.0, 1.0)
 }
 
 /// Computes the requested measures, representing undefined results as JSON null.
@@ -452,10 +504,10 @@ pub fn compute_vector_similarity_stats(
     let similarity_measure = similarity_measure.unwrap_or("all");
     let mut computations: Vec<(Box<dyn Fn() -> f64 + Send + Sync>, &str)> = Vec::new();
     if similarity_measure == "spearman_rho" || similarity_measure == "all" {
-        computations.push((Box::new(|| spearman_rho(vector_1.as_slice().unwrap(), vector_2.as_slice().unwrap())), "spearman_rho"));
+        computations.push((Box::new(|| spearman_rho(&logical_values(vector_1), &logical_values(vector_2))), "spearman_rho"));
     }
     if similarity_measure == "kendall_tau" || similarity_measure == "all" {
-        computations.push((Box::new(|| kendall_tau(vector_1.as_slice().unwrap(), vector_2.as_slice().unwrap())), "kendall_tau"));
+        computations.push((Box::new(|| kendall_tau(&logical_values(vector_1), &logical_values(vector_2))), "kendall_tau"));
     }
     if similarity_measure == "approximate_distance_correlation" || similarity_measure == "all" {
         computations.push((Box::new(|| approximate_distance_correlation(&vector_1, &vector_2)), "approximate_distance_correlation"));
@@ -639,8 +691,55 @@ fn fast_vector_similarity(_py: Python, m: &PyModule) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_average_and_stdev_of_25th_to_75th_percentile_func;
+    use super::{compute_average_and_stdev_of_25th_to_75th_percentile_func, FiniteRange};
     use ndarray::Array1;
+
+    #[test]
+    fn histogram_bins_preserve_scale_and_offset_invariance() {
+        let offset = 1e300_f64.to_bits();
+        let tiny = f64::MIN_POSITIVE;
+        let fixtures = [
+            Array1::from(vec![0.0, 1.0, 2.0, 3.0, 4.0]),
+            Array1::from(vec![0.0, tiny, 2.0 * tiny, 3.0 * tiny, 4.0 * tiny]),
+            Array1::from_iter((0..5).map(f64::from_bits)),
+            Array1::from_iter((0..5).map(|i| f64::from_bits(offset + i))),
+            Array1::from(vec![
+                -f64::MAX, -f64::MAX / 2.0, 0.0, f64::MAX / 2.0, f64::MAX,
+            ]),
+        ];
+        for values in fixtures {
+            let range = FiniteRange::new(&values);
+            let bins: Vec<_> = values.iter().map(|&value| range.bin(value, 20)).collect();
+            assert_eq!(bins, [0, 5, 10, 15, 19], "values: {values:?}");
+        }
+    }
+
+    #[test]
+    fn json_input_preserves_finite_float_roundtrips() {
+        let offset = 1e300_f64.to_bits();
+        let mut values = vec![
+            0.0, -0.0, f64::from_bits(1), f64::MIN_POSITIVE,
+            f64::MAX, -f64::MAX, 3.9287532173373315e299,
+        ];
+        values.extend((0..8).map(|i| f64::from_bits(offset + i)));
+        let encoded = serde_json::to_string(&values).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(decoded[index].as_f64().unwrap().to_bits(), value.to_bits());
+        }
+    }
+
+    #[test]
+    fn histogram_bins_handle_constant_values_and_signed_zero() {
+        for values in [
+            Array1::from(vec![-0.0, 0.0, -0.0, 0.0]),
+            Array1::from_elem(4, f64::MAX),
+            Array1::from_elem(4, f64::from_bits(1)),
+        ] {
+            let range = FiniteRange::new(&values);
+            assert!(values.iter().all(|&value| range.bin(value, 20) == 0));
+        }
+    }
 
     #[test]
     fn bootstrap_summary_propagates_non_finite_replicates_before_trimming() {
