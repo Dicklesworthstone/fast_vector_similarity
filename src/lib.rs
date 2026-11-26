@@ -1,3 +1,4 @@
+mod distance;
 mod hoeffding;
 
 use ndarray_rand::RandomExt;
@@ -293,19 +294,9 @@ pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f6
     dependency.max(0.0).min(1.0) // Ensure the value is between 0 and 1
 }
 
-fn distance_matrix_one_d(data: &Array1<f64>) -> Array2<f64> {
-    let n = data.len();
-    let mut distance = Array2::<f64>::zeros((n, n));
-    distance.axis_iter_mut(Axis(0)).enumerate().for_each(|(i, mut row)| {
-        row.iter_mut().enumerate().for_each(|(j, elem)| {
-            *elem = (data[i] - data[j]).abs();
-        });
-    });
-    distance
-}
-
 /// Returns NaN for empty inputs or any NaN or infinite observation, even outside
-/// the randomly selected subset.
+/// the randomly selected subset. Uses O(m) working storage for at most 1000
+/// sampled observations while preserving the biased centered-distance estimate.
 pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     assert_eq!(x.len(), y.len());
     if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
@@ -324,43 +315,7 @@ pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64
     x_subset.mapv_inplace(|value| x_range.position(value));
     y_subset.mapv_inplace(|value| y_range.position(value));
 
-    let mut a_matrix = distance_matrix_one_d(&x_subset);
-    let mut b_matrix = distance_matrix_one_d(&y_subset);
-
-    // Optimize double centering using vectorized operations
-    fn double_centering(matrix: &mut Array2<f64>) {
-        let row_means = matrix.mean_axis(Axis(1)).unwrap();
-        let col_means = matrix.mean_axis(Axis(0)).unwrap();
-        let grand_mean = row_means.mean().unwrap();
-
-        ndarray::Zip::from(matrix.rows_mut())
-            .and(&row_means)
-            .for_each(|mut row, &row_mean| {
-                row -= &col_means;
-                row += grand_mean;
-                row -= row_mean;
-            });
-    }
-
-    double_centering(&mut a_matrix);
-    double_centering(&mut b_matrix);
-
-    // The common sample-size factors cancel during normalization. Accumulate
-    // all three sums together, avoiding three temporary n-by-n product arrays.
-    let (distance_covariance, distance_variance_x, distance_variance_y) = a_matrix
-        .iter()
-        .zip(b_matrix.iter())
-        .fold((0.0, 0.0, 0.0), |(cov, var_x, var_y), (&a, &b)| {
-            (cov + a * b, var_x + a * a, var_y + b * b)
-        });
-
-    if distance_variance_x <= 0.0 || distance_variance_y <= 0.0 {
-        return 0.0;
-    }
-
-    (distance_covariance / distance_variance_x.sqrt() / distance_variance_y.sqrt())
-        .clamp(0.0, 1.0)
-        .sqrt()
+    distance::correlation(&logical_values(&x_subset), &logical_values(&y_subset))
 }
 
 fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {

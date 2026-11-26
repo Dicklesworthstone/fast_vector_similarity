@@ -12,7 +12,7 @@ The library implements a range of classical and modern similarity measures, incl
 
 1. **Spearman's Rank-Order Correlation (`spearman_rho`)**
 2. **Kendall's Tau Rank Correlation (`kendall_tau`)** (optimized for faster computation with large datasets)
-3. **Approximate Distance Correlation (`approximate_distance_correlation`)** (vectorized for speed and accuracy)
+3. **Approximate Distance Correlation (`approximate_distance_correlation`)** (linear working storage)
 4. **Jensen-Shannon Dependency Measure (`jensen_shannon_dependency_measure`)** (revised for improved utility in dependency measurement)
 5. **Hoeffding's D Measure (`hoeffding_d`)**
 6. **Normalized Mutual Information (`normalized_mutual_information`)** (newly introduced for analyzing variable dependence)
@@ -269,12 +269,14 @@ rule. Constant vectors occupy one bin; nonconstant vectors are normalized by
 their actual range. This preserves tiny and subnormal differences and handles
 opposite-sign finite extremes without adding a fixed epsilon to the range.
 
-Distance correlation normalizes each sampled vector independently before forming
-distance matrices. Translation and scaling preserve the statistic, while bounded
+Distance correlation normalizes each sampled vector independently before computing
+pairwise distances. Translation and scaling preserve the statistic, while bounded
 coordinates keep the distance variances stable across tiny and huge overall scales.
-Covariance and variance sums are accumulated together without temporary product
-matrices. The existing convention of zero distance correlation for a constant
-sample is preserved.
+A first pass computes row means; a second pass recomputes centered distances and
+accumulates covariance and variance with compensated sums. This preserves the
+biased centered-distance estimate using two linear row-mean arrays, including the
+centered diagonal contributions. The existing convention of zero distance
+correlation for a constant sample is preserved.
 
 All Rust entry points taking `Array1<f64>` support reversed and strided owned
 arrays. Computation follows logical element order, preserving observation pairs
@@ -328,21 +330,21 @@ Kendall’s Tau is a rank-based measure that evaluates the strength of ordinal a
 
 ### 3. **Approximate Distance Correlation (`approximate_distance_correlation`)**
 
-Distance Correlation is a powerful measure that can detect both linear and non-linear dependencies between two variables. The fundamental property of distance correlation is that it is zero if and only if the variables are independent, which is not guaranteed by traditional correlation measures like Pearson’s or Spearman’s.
+Distance correlation measures both linear and non-linear dependence. This function
+computes the biased sample estimator on up to 1,000 paired observations. Larger
+inputs use a random subset, so their estimates can vary between calls.
 
 **How It Works**:
-- First, a pairwise distance matrix is computed for both vectors. This matrix contains the absolute differences between all pairs of points in the vector.
-- The matrices are "double-centered" to adjust for row and column means, making them comparable.
-- The distance covariance is calculated as the sum of the element-wise product of the centered distance matrices. The distance correlation is then derived by normalizing the covariance by the distance variances of each vector.
+
+- A first pass over observation pairs computes the row means of the two absolute-distance matrices.
+- A second pass recomputes each centered distance and accumulates covariance and both variances. Off-diagonal pairs contribute twice, and centered diagonal entries contribute once.
+- Normalizing these moments gives the same biased centered-distance statistic as the full matrix formulation, up to floating-point rounding.
 
 **Optimizations in Our Implementation**:
-- **Vectorized Distance Matrix Computation**: The distance matrix computation is fully vectorized using `ndarray`, enabling efficient large-scale matrix operations.
-- **Parallel Processing**: The double-centering and distance covariance steps are performed in parallel using `rayon`, which allows the computation to scale efficiently with the size of the dataset.
-- **Subset Sampling for Approximation**: Instead of computing the full distance correlation, we introduce a subset sampling technique that computes the distance correlation on a random subset of the data. This dramatically reduces computational overhead without significantly affecting the accuracy of the result.
 
-**Why It Stands Out**:
-- **Detects Non-Linear Dependencies**: Distance correlation is one of the few measures that is sensitive to both linear and non-linear relationships, making it highly versatile.
-- **Independence Guarantee**: Its ability to be zero only when the variables are independent gives it a clear edge over other correlation measures in certain scenarios.
+- **Linear Working Storage**: The calculation keeps two row-mean arrays and a few scalar accumulators. At 1,000 sampled observations, those arrays use 16,000 bytes, compared with 16,000,000 bytes for two dense distance matrices; sampled input buffers are additional. This reduces memory use when many bootstrap replicates run concurrently.
+- **Compensated Moment Sums**: Covariance and both variances use compensated accumulation, limiting rounding loss in signed cross-products.
+- **Bounded Sampling**: The function samples at most 1,000 paired observations without replacement. Complete-input validation remains in place before sampling. With `n` input observations and `m = min(n, 1000)` sampled observations, time is O(n + m²) and auxiliary storage is O(m).
 
 ### 4. **Jensen-Shannon Dependency Measure (`jensen_shannon_dependency_measure`)**
 
