@@ -240,9 +240,12 @@ average and `stdev_<measure>` value `null`; undefined replicates are not silentl
 removed or trimmed away. Empty inputs, zero-sized bootstrap samples, and fewer than
 two bootstrap replicates also produce `null` summaries.
 
-Finite inputs can still yield an undefined statistic. For example, NMI is undefined
-when both vectors are constant because their total marginal entropy is zero. It
-returns `NaN` directly and `null` through the JSON APIs, including bootstrapping.
+Finite inputs can still yield an undefined statistic. Spearman's rho and Kendall's
+tau-b are undefined when either vector is constant or there are fewer than two
+observations. NMI is undefined when both vectors are constant because their total
+marginal entropy is zero. These results are `NaN` directly and `null` through the
+JSON APIs, including bootstrapping. Sampling with replacement can create a
+constant replicate even from nonconstant source vectors.
 
 The Python wrappers accept JSON arrays of finite numbers. They raise `ValueError`
 for malformed JSON (including `NaN`, `Infinity`, and out-of-range numeric literals),
@@ -262,6 +265,10 @@ Spearman’s Rank-Order Correlation is a non-parametric measure of the strength 
 - First, both input vectors are converted into ranks, where the lowest value is assigned rank 1, the second-lowest rank 2, and so on. If ties are present, the average rank for the tied values is computed.
 - Once the ranks are assigned, the measure reduces to computing the Pearson correlation on these ranks. However, the key difference lies in its robustness to non-linearity.
   
+The implementation computes Pearson correlation of the average ranks, so tied
+observations receive the correct normalization. It does not use the squared-rank-
+difference shortcut, which assumes there are no ties.
+
 **Optimizations in Our Implementation**:
 - **Parallel Sorting**: The library uses parallel sorting with the `rayon` crate to assign ranks, ensuring that this operation scales efficiently even for large datasets.
 - **Efficient Rank Calculation**: The average rank computation in the presence of ties is optimized with a direct look-up mechanism, minimizing redundant operations when processing multiple tied values in sequence.
@@ -272,19 +279,19 @@ Spearman’s Rank-Order Correlation is a non-parametric measure of the strength 
 
 ### 2. **Kendall's Tau Rank Correlation (`kendall_tau`)**
 
-Kendall’s Tau is a rank-based measure that evaluates the strength of ordinal association between two variables by comparing the relative ordering of data points. It is interpreted as the probability that the association between two variables is concordant versus discordant.
+Kendall’s Tau is a rank-based measure that evaluates the strength of ordinal association between two variables by comparing the relative ordering of data points. Positive scores favor concordant pairs, while negative scores favor discordant pairs.
 
 **How It Works**:
 - Kendall’s Tau compares all possible pairs of observations. For each pair, if the ranks of both variables agree (i.e., are concordant), the count of concordant pairs is increased. If the ranks disagree (i.e., are discordant), the discordant count is incremented.
-- The final measure is computed based on the difference between the number of concordant and discordant pairs, normalized by the total number of pairs.
+- The implementation returns **tau-b**, normalizing the difference between concordant and discordant pairs with corrections for ties in either coordinate. Pairs tied in both coordinates are excluded from the concordant and discordant counts.
 
 **Optimizations in Our Implementation**:
-- **Inversion Counting Using Merge Sort**: One of the key computational bottlenecks in Kendall’s Tau is counting the number of discordant pairs. Our implementation uses an optimized merge sort algorithm to efficiently count inversions (discordant pairs), reducing the time complexity from O(n^2) to O(n log n).
+- **Inversion Counting Using Merge Sort**: The implementation sorts observation pairs by both coordinates, then counts strict inversions in the second coordinate. This excludes ties in the first coordinate from discordant pairs and runs in O(n log n) time with O(n) storage. Pair counts use wide integers before floating-point normalization.
 - **Parallel Sorting**: The `rayon` crate is used to parallelize the sorting process, allowing the calculation to scale effectively on multi-core systems.
 
 **Why It Stands Out**:
 - **Tie Handling**: Kendall’s Tau inherently handles ties (when two elements have the same rank), making it more robust for datasets with tied values compared to other rank-based measures.
-- **Probability Interpretation**: Unlike Spearman’s rho, Kendall’s Tau is directly interpretable as a probability, which can provide more intuitive insights in ordinal datasets.
+- **Pairwise Interpretation**: Tau-b summarizes concordant versus discordant ordering, with normalization that accounts for ties in each variable.
 - **Fast with Inversion Counting**: Our use of merge sort for counting inversions dramatically improves the performance, making it feasible for large datasets where traditional implementations would be too slow.
 
 ### 3. **Approximate Distance Correlation (`approximate_distance_correlation`)**

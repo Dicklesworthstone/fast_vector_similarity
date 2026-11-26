@@ -247,10 +247,17 @@ fn empty_bootstrap_inputs_and_aggregates_return_null() {
 }
 
 #[test]
-fn finite_bootstrap_results_remain_numeric() {
+fn finite_bootstrap_results_respect_degenerate_resamples() {
     let x = Array1::from(vec![-3.0, -1.0, 0.0, 2.0, 4.0, 7.0]);
     let result = compute_bootstrapped_similarity_stats(&x, &x, 8, 8, Some("spearman_rho"));
-    assert_eq!(result["spearman_rho"].as_f64(), Some(1.0));
-    assert_eq!(result["stdev_spearman_rho"].as_f64(), Some(0.0));
+    if let Some(rho) = result["spearman_rho"].as_f64() {
+        assert!((rho - 1.0).abs() < 1e-12);
+        assert!(result["stdev_spearman_rho"].as_f64().unwrap().abs() < 1e-12);
+    } else {
+        // Sampling with replacement can select one observation every time.
+        // Its constant ranks are undefined and invalidate the entire summary.
+        assert_null_measure(&result, "spearman_rho");
+        assert_null_measure(&result, "stdev_spearman_rho");
+    }
     assert_eq!(result.as_object().unwrap().len(), 4);
 }

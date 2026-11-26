@@ -80,7 +80,13 @@ class NonFiniteInputTests(unittest.TestCase):
             with self.subTest(function=function.__name__):
                 params = dict(base, similarity_measure="spearman_rho")
                 result = json.loads(function(json.dumps(params)))
-                self.assertEqual(result["spearman_rho"], 1.0)
+                if result["spearman_rho"] is None:
+                    # A bootstrap replicate can be constant even when the
+                    # source is not. Such replicates must not be discarded.
+                    self.assertEqual(function.__name__, "py_compute_bootstrapped_similarity_stats")
+                    self.assertIsNone(result["stdev_spearman_rho"])
+                else:
+                    self.assertAlmostEqual(result["spearman_rho"], 1.0)
 
     def test_mismatched_vector_lengths_raise_value_error(self):
         for function, base, names in self.cases():

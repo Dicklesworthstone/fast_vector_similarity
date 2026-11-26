@@ -21,39 +21,50 @@ fn average_rank(data: &[f64]) -> Vec<f64> {
     let mut rank_values = vec![0.0; data.len()];
     let mut i = 0;
     while i < ranks.len() {
-        let mut total_rank = i as f64 + 1.0; // Start rank
-        let mut count = 1;
-        while i + count < ranks.len() && ranks[i].1 == ranks[i + count].1 {
-            total_rank += (i + count) as f64 + 1.0;
-            count += 1;
+        let mut end = i + 1;
+        while end < ranks.len() && ranks[i].1 == ranks[end].1 {
+            end += 1;
         }
-        let average_rank = total_rank / count as f64;
-        for j in 0..count {
-            rank_values[ranks[i + j].0] = average_rank;
+        let average_rank = (i as f64 + end as f64 + 1.0) / 2.0;
+        for &(index, _) in &ranks[i..end] {
+            rank_values[index] = average_rank;
         }
-        i += count;
+        i = end;
     }
     rank_values
 }
 
-/// Returns NaN for empty inputs or any NaN or infinite observation.
+/// Spearman correlation is Pearson correlation of average ranks, including ties.
+/// Returns NaN for fewer than two observations, a constant vector, or any
+/// non-finite observation. Inputs must have equal lengths.
 pub fn spearman_rho(x: &[f64], y: &[f64]) -> f64 {
-    if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+    assert_eq!(x.len(), y.len());
+    if x.len() < 2 || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
     let n = x.len() as f64;
     let rank_x = average_rank(x);
     let rank_y = average_rank(y);
 
-    let d_squared_sum: f64 = rank_x.iter()
-        .zip(rank_y.iter())
-        .map(|(rx, ry)| (rx - ry).powi(2))
-        .sum();
-    1.0 - (6.0 * d_squared_sum) / (n * (n * n - 1.0))
+    // Average ranks preserve the mean (n + 1) / 2 even when observations tie.
+    // The shortcut based on squared rank differences is only valid without ties.
+    let mean_rank = (n + 1.0) / 2.0;
+    let (mut covariance, mut variance_x, mut variance_y) = (0.0, 0.0, 0.0);
+    for (&rx, &ry) in rank_x.iter().zip(rank_y.iter()) {
+        let dx = rx - mean_rank;
+        let dy = ry - mean_rank;
+        covariance += dx * dy;
+        variance_x += dx * dx;
+        variance_y += dy * dy;
+    }
+    if variance_x == 0.0 || variance_y == 0.0 {
+        return f64::NAN;
+    }
+    (covariance / variance_x.sqrt() / variance_y.sqrt()).clamp(-1.0, 1.0)
 }
 
-fn count_inversions(arr: &mut [f64]) -> usize {
-    fn merge_sort(arr: &mut [f64], temp: &mut [f64]) -> usize {
+fn count_inversions(arr: &mut [f64]) -> u128 {
+    fn merge_sort(arr: &mut [f64], temp: &mut [f64]) -> u128 {
         let n = arr.len();
         if n <= 1 {
             return 0;
@@ -65,7 +76,7 @@ fn count_inversions(arr: &mut [f64]) -> usize {
         inv_count
     }
 
-    fn merge(arr: &mut [f64], temp: &mut [f64], mid: usize) -> usize {
+    fn merge(arr: &mut [f64], temp: &mut [f64], mid: usize) -> u128 {
         let mut i = 0;
         let mut j = mid;
         let mut k = 0;
@@ -77,7 +88,7 @@ fn count_inversions(arr: &mut [f64]) -> usize {
                 i += 1;
             } else {
                 temp[k] = arr[j];
-                inv_count += mid - i;
+                inv_count += (mid - i) as u128;
                 j += 1;
             }
             k += 1;
@@ -101,37 +112,61 @@ fn count_inversions(arr: &mut [f64]) -> usize {
     merge_sort(arr, &mut temp)
 }
 
-/// Returns NaN for empty inputs or any NaN or infinite observation.
+fn pair_count(n: usize) -> u128 {
+    let n = n as u128;
+    n * n.saturating_sub(1) / 2
+}
+
+fn count_tied_pairs<T>(values: &[T], equal: impl Fn(&T, &T) -> bool) -> u128 {
+    let mut ties = 0;
+    let mut start = 0;
+    while start < values.len() {
+        let mut end = start + 1;
+        while end < values.len() && equal(&values[start], &values[end]) {
+            end += 1;
+        }
+        ties += pair_count(end - start);
+        start = end;
+    }
+    ties
+}
+
+/// Kendall's tau-b, correcting for ties in either or both coordinates.
+/// Runs in O(n log n) time with O(n) auxiliary storage. Returns NaN for fewer
+/// than two observations, a constant vector, or any non-finite observation.
 pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     assert_eq!(x.len(), y.len());
-    if x.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+    if x.len() < 2 || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
-    let n = x.len() as f64;
+    let mut pairs: Vec<(f64, f64)> = x.iter().copied().zip(y.iter().copied()).collect();
+    // Sorting by y within each x tie prevents those pairs from being counted as
+    // discordant. Numeric comparison also keeps -0.0 and +0.0 in the same group.
+    pairs.par_sort_unstable_by(|a, b| {
+        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let ties_x = count_tied_pairs(&pairs, |a, b| a.0 == b.0);
+    let ties_xy = count_tied_pairs(&pairs, |a, b| a == b);
+    let mut sorted_y: Vec<f64> = pairs.iter().map(|&(_, y)| y).collect();
+    let discordant = count_inversions(&mut sorted_y);
+    let ties_y = count_tied_pairs(&sorted_y, |a, b| a == b);
 
-    let rank_x = average_rank(x);
-    let rank_y = average_rank(y);
-
-    // Create an array of ranks sorted by rank_x
-    let mut pairs: Vec<(f64, f64)> = rank_x
-        .iter()
-        .zip(rank_y.iter())
-        .map(|(&rx, &ry)| (rx, ry))
-        .collect();
-
-    // Sort pairs by rank_x
-    pairs.par_sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Extract rank_y in the order of sorted rank_x
-    let sorted_rank_y: Vec<f64> = pairs.iter().map(|&(_, ry)| ry).collect();
-
-    // Count inversions in sorted_rank_y using a more efficient algorithm
-    let inversions = count_inversions(&mut sorted_rank_y.clone());
-
-    let total_pairs = n * (n - 1.0) / 2.0;
-    let tau = 1.0 - 2.0 * inversions as f64 / total_pairs;
-
-    tau
+    let total_pairs = pair_count(x.len());
+    let untied_x = total_pairs - ties_x;
+    let untied_y = total_pairs - ties_y;
+    if untied_x == 0 || untied_y == 0 {
+        return f64::NAN;
+    }
+    let comparable = untied_x - (ties_y - ties_xy);
+    let concordant = comparable - discordant;
+    // Subtract integer counts before conversion to retain small differences.
+    let numerator = if concordant >= discordant {
+        (concordant - discordant) as f64
+    } else {
+        -((discordant - concordant) as f64)
+    };
+    (numerator / (untied_x as f64).sqrt() / (untied_y as f64).sqrt()).clamp(-1.0, 1.0)
 }
 
 /// Returns NaN for empty inputs or any NaN or infinite observation.
