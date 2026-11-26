@@ -244,9 +244,10 @@ two bootstrap replicates also produce `null` summaries.
 
 Finite inputs can still yield an undefined statistic. Spearman's rho and Kendall's
 tau-b are undefined when either vector is constant or there are fewer than two
-observations. NMI is undefined when both vectors are constant because their total
-marginal entropy is zero. These results are `NaN` directly and `null` through the
-JSON APIs, including bootstrapping. Sampling with replacement can create a
+observations. Hoeffding's D requires at least five observations, including within
+each bootstrap sample. NMI is undefined when both vectors are constant because
+their total marginal entropy is zero. These results are `NaN` directly and `null`
+through the JSON APIs, including bootstrapping. Sampling with replacement can create a
 constant replicate even from nonconstant source vectors.
 
 The Python wrappers accept JSON arrays of finite numbers. They raise `ValueError`
@@ -366,7 +367,7 @@ Hoeffding’s D is a powerful non-parametric measure that detects complex and po
 
 **Optimizations in Our Implementation**:
 - **Parallel Computation of Ranks**: Like Spearman’s rho, Hoeffding’s D involves computing ranks, and this is optimized using parallel sorting algorithms.
-- **Efficient Counting Mechanism**: We optimize the inner loop that computes concordant and discordant pairs by vectorizing the comparison operations. This avoids nested loops and significantly reduces computational complexity.
+- **Joint Ranks in O(n log n) Time**: A Fenwick tree counts observations with smaller ranks in both coordinates. Equal ranks in the first coordinate are processed as one group before the tree is updated, preserving the half-weight contributions from ties in one coordinate and quarter-weight contributions from ties in both. The complete calculation uses O(n) storage and retains the same tie-adjusted statistic without scanning every pair of observations.
 
 **Why It Stands Out**:
 - **Non-Parametric and General**: Hoeffding’s D can detect relationships where other correlation measures fail, especially when the relationship between variables is neither linear nor monotonic.

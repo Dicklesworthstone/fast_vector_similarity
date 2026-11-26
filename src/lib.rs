@@ -1,3 +1,5 @@
+mod hoeffding;
+
 use ndarray_rand::RandomExt;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray::prelude::*;
@@ -365,10 +367,11 @@ fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
 }
 
-/// Returns NaN for empty inputs or any NaN or infinite observation.
+/// Computes Hoeffding's D in O(n log n) time with O(n) storage.
+/// Returns NaN for fewer than five observations or any NaN or infinite value.
 pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     assert_eq!(x.len(), y.len());
-    if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+    if x.len() < 5 || has_non_finite(x.iter().chain(y.iter())) {
         return f64::NAN;
     }
     let n = x.len() as f64;
@@ -379,20 +382,7 @@ pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     let r_minus = &r - 1.0;
     let s_minus = &s - 1.0;
 
-    let q_vec: Vec<f64> = (0..x.len())
-        .into_par_iter()
-        .map(|i| {
-            let ri = r[i];
-            let si = s[i];
-            let less_than = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < ri && *s_val < si).count() as f64;
-            let equal_both = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == ri && *s_val == si).count() as f64 - 1.0;
-            let equal_r = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val == ri && *s_val < si).count() as f64;
-            let equal_s = r.iter().zip(s.iter()).filter(|&(r_val, s_val)| *r_val < ri && *s_val == si).count() as f64;
-            1.0 + less_than + 0.25 * equal_both + 0.5 * (equal_r + equal_s)
-        })
-        .collect();
-
-    let q = Array1::from(q_vec);
+    let q = hoeffding::joint_ranks(&r, &s);
     let q_minus = &q - 1.0;
 
     let d1 = q_minus.mapv(|v| v * (v - 1.0)).sum();
