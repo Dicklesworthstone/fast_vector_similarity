@@ -21,6 +21,12 @@ The library implements a range of classical and modern similarity measures, incl
 
 The library includes robust bootstrapping functionality to estimate the distribution of similarity measures. Bootstrapping offers improved confidence in the results by randomly resampling the dataset multiple times.
 
+For each measure, the summary removes `floor(B / 4)` scores from each tail, where
+`B` is the number of bootstrap replicates. It reports the mean and population
+standard deviation of the remaining scores. Both tails lose the same number of
+scores, including when `B` is not divisible by four; with two or three replicates,
+all scores are retained.
+
 ### Performance Optimizations
 
 Several enhancements have been introduced for optimal efficiency:

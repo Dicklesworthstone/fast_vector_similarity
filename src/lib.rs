@@ -532,14 +532,17 @@ fn generate_bootstrap_sample_func(original_length_of_input: usize, sample_size: 
 
 fn compute_average_and_stdev_of_25th_to_75th_percentile_func(input_vector: &Array1<f64>) -> (f64, f64) {
     // Undefined replicates invalidate the summary; dropping or trimming them
-    // would silently bias the estimate. Fewer than two values leave an empty trim.
+    // would silently bias the estimate. Require at least two bootstrap replicates.
     if input_vector.len() < 2 || has_non_finite(input_vector.iter()) {
         return (f64::NAN, f64::NAN);
     }
     let mut sorted_vector = input_vector.to_vec();
     sorted_vector.par_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Round the trim count down and remove the same count from each tail.
+    // Computing 3 * len / 4 as an exclusive upper bound drops one extra high
+    // score when len is not divisible by four, biasing the summary downward.
     let lower_idx = input_vector.len() / 4;
-    let upper_idx = 3 * input_vector.len() / 4;
+    let upper_idx = input_vector.len() - lower_idx;
     let trimmed_vector = &sorted_vector[lower_idx..upper_idx];
     let trimmed_array = Array1::from(trimmed_vector.to_vec());
     let trimmed_vector_avg = trimmed_array.mean().unwrap();
@@ -745,6 +748,125 @@ mod tests {
                     "non-finite replicate must invalidate the stdev"
                 );
             }
+        }
+    }
+
+    fn bootstrap_summary_of(values: &[f64]) -> (f64, f64) {
+        compute_average_and_stdev_of_25th_to_75th_percentile_func(&Array1::from(values.to_vec()))
+    }
+
+    fn assert_bootstrap_pair(actual: (f64, f64), expected: (f64, f64)) {
+        assert!(
+            actual.0.is_finite() && (actual.0 - expected.0).abs() <= 1e-12,
+            "mean: expected {}, got {}",
+            expected.0,
+            actual.0
+        );
+        assert!(
+            actual.1.is_finite() && (actual.1 - expected.1).abs() <= 1e-12,
+            "population stdev: expected {}, got {}",
+            expected.1,
+            actual.1
+        );
+    }
+
+    #[test]
+    fn bootstrap_summary_trims_equal_numbers_from_both_tails() {
+        // Expected retained samples are explicit, independent of index arithmetic.
+        // Tuple entries are (input observations, expected mean, population variance).
+        let cases: &[(&[f64], f64, f64)] = &[
+            // B=2: retain [1, 3].
+            (&[3.0, 1.0], 2.0, 1.0),
+            // B=3: retain [1, 2, 3].
+            (&[3.0, 1.0, 2.0], 2.0, 2.0 / 3.0),
+            // B=5: retain [1, 2, 3].
+            (&[40.0, 3.0, -20.0, 1.0, 2.0], 2.0, 2.0 / 3.0),
+            // B=6: retain [0, 2, 4, 6].
+            (&[70.0, 4.0, -50.0, 2.0, 6.0, 0.0], 3.0, 5.0),
+            // B=7: retain [-2, -1, 0, 1, 2].
+            (&[110.0, 1.0, -90.0, -1.0, 2.0, -2.0, 0.0], 0.0, 2.0),
+            // B=4: retain [1, 3], preserving the existing divisible-by-four rule.
+            (&[40.0, 3.0, -10.0, 1.0], 2.0, 1.0),
+            // B=8: retain [0, 2, 4, 6].
+            (&[90.0, 4.0, -100.0, 0.0, 70.0, 6.0, -80.0, 2.0], 3.0, 5.0),
+            // B=12: retain [1, 2, 3, 4, 5, 6].
+            (
+                &[300.0, 3.0, -100.0, 5.0, 100.0, 1.0, -300.0, 6.0, 200.0, 2.0, -200.0, 4.0],
+                3.5,
+                35.0 / 12.0,
+            ),
+            // Ties at trim boundaries: retain [0, 1, 1, 1, 2].
+            (&[2.0, 1.0, 0.0, 1.0, 2.0, 0.0, 1.0], 1.0, 2.0 / 5.0),
+            // Constant observations retain their value and zero spread.
+            (&[2.0; 7], 2.0, 0.0),
+        ];
+        for &(values, mean, variance) in cases {
+            assert_bootstrap_pair(bootstrap_summary_of(values), (mean, variance.sqrt()));
+        }
+    }
+
+    #[test]
+    fn bootstrap_summary_sign_reversal_preserves_spread_and_reverses_mean() {
+        for values in [
+            vec![-1.0, 1.0],
+            vec![-1.0, 0.0, 1.0],
+            vec![101.0, -9.0, 1.0, 4.0, 8.0, -12.0, 17.0],
+        ] {
+            let (mean, stdev) = bootstrap_summary_of(&values);
+            let reflected: Vec<f64> = values.iter().map(|&value| -value).collect();
+            assert_bootstrap_pair(bootstrap_summary_of(&reflected), (-mean, stdev));
+        }
+    }
+
+    #[test]
+    fn bootstrap_summary_is_independent_of_observation_order() {
+        let values = [101.0, -9.0, 1.0, 4.0, 8.0, -12.0, 17.0];
+        // Retain [-9, 1, 4, 8, 17]: mean = 21/5, variance = 1814/25.
+        let expected = (21.0 / 5.0, (1814.0_f64 / 25.0).sqrt());
+        for shift in 0..values.len() {
+            let mut permuted = values;
+            permuted.rotate_left(shift);
+            assert_bootstrap_pair(bootstrap_summary_of(&permuted), expected);
+            permuted.reverse();
+            assert_bootstrap_pair(bootstrap_summary_of(&permuted), expected);
+        }
+    }
+
+    #[test]
+    fn bootstrap_summary_respects_affine_changes_including_negative_scale() {
+        let values = [101.0, -9.0, 1.0, 4.0, 8.0, -12.0, 17.0];
+        // Explicit baseline moments of retained [-9, 1, 4, 8, 17].
+        let expected_mean = 21.0 / 5.0;
+        let expected_stdev = (1814.0_f64 / 25.0).sqrt();
+        for (scale, offset) in [(3.0_f64, 11.0), (-2.0, 8.0), (1.0, -32.0)] {
+            let transformed: Vec<f64> = values.iter().map(|&value| scale * value + offset).collect();
+            assert_bootstrap_pair(
+                bootstrap_summary_of(&transformed),
+                (scale * expected_mean + offset, scale.abs() * expected_stdev),
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_summary_rejects_non_finite_values_even_in_trimmed_tails() {
+        let original = [-100.0, -2.0, -1.0, 0.0, 1.0, 2.0, 100.0];
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for index in 0..original.len() {
+                let mut values = original;
+                values[index] = invalid;
+                let (mean, stdev) = bootstrap_summary_of(&values);
+                assert!(mean.is_nan(), "invalid replicate at {index} must invalidate the mean");
+                assert!(stdev.is_nan(), "invalid replicate at {index} must invalidate the spread");
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_summary_requires_at_least_two_observations() {
+        for values in [vec![], vec![7.0]] {
+            let (mean, stdev) = bootstrap_summary_of(&values);
+            assert!(mean.is_nan());
+            assert!(stdev.is_nan());
         }
     }
 }
