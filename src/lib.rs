@@ -6,10 +6,14 @@ use rayon::prelude::*;
 use serde_json::json;
 use rand::prelude::SliceRandom;
 use rand::seq::IteratorRandom;
-use std::error::Error;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use serde_json::Value;
+
+fn has_non_finite<'a>(mut values: impl Iterator<Item = &'a f64>) -> bool {
+    values.any(|value| !value.is_finite())
+}
 
 fn average_rank(data: &[f64]) -> Vec<f64> {
     let mut ranks: Vec<(usize, f64)> = data.iter().cloned().enumerate().collect();
@@ -32,7 +36,11 @@ fn average_rank(data: &[f64]) -> Vec<f64> {
     rank_values
 }
 
+/// Returns NaN for empty inputs or any NaN or infinite observation.
 pub fn spearman_rho(x: &[f64], y: &[f64]) -> f64 {
+    if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let n = x.len() as f64;
     let rank_x = average_rank(x);
     let rank_y = average_rank(y);
@@ -93,8 +101,12 @@ fn count_inversions(arr: &mut [f64]) -> usize {
     merge_sort(arr, &mut temp)
 }
 
+/// Returns NaN for empty inputs or any NaN or infinite observation.
 pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     assert_eq!(x.len(), y.len());
+    if x.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let n = x.len() as f64;
 
     let rank_x = average_rank(x);
@@ -122,8 +134,12 @@ pub fn kendall_tau(x: &[f64], y: &[f64]) -> f64 {
     tau
 }
 
+/// Returns NaN for empty inputs or any NaN or infinite observation.
 pub fn jensen_shannon_dependency_measure(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     assert_eq!(x.len(), y.len());
+    if x.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let _n = x.len() as f64;
     let num_bins: usize = 20;
 
@@ -207,7 +223,12 @@ fn distance_matrix_one_d(data: &Array1<f64>) -> Array2<f64> {
     distance
 }
 
+/// Returns NaN for empty inputs or any NaN or infinite observation, even outside
+/// the randomly selected subset.
 pub fn approximate_distance_correlation(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let subset_size = 1000.min(x.len());
     let mut rng = rand::thread_rng();
     let subset_indices: Vec<usize> = (0..x.len()).choose_multiple(&mut rng, subset_size);
@@ -250,7 +271,11 @@ fn dot_product(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
 }
 
+/// Returns NaN for empty inputs or any NaN or infinite observation.
 pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
+    if x.is_empty() || y.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let n = x.len() as f64;
     let r = Array1::from(average_rank(x.as_slice().unwrap()));
     let s = Array1::from(average_rank(y.as_slice().unwrap()));
@@ -294,16 +319,25 @@ pub fn exact_hoeffdings_d_func(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     numerator / denom
 }
 
+/// Returns NaN for empty inputs, any NaN or infinite observation, or zero total
+/// marginal entropy (both vectors constant). Inputs must have equal lengths.
 pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     assert_eq!(x.len(), y.len());
+    if x.is_empty() || has_non_finite(x.iter().chain(y.iter())) {
+        return f64::NAN;
+    }
     let n = x.len() as f64;
     let num_bins = 20;
 
     // Compute bin edges for x and y
-    let x_min = x.into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let x_max = x.into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let y_min = y.into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let y_max = y.into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let (x_min, x_max) = x.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(min, max), &value| (min.min(value), max.max(value)),
+    );
+    let (y_min, y_max) = y.iter().fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(min, max), &value| (min.min(value), max.max(value)),
+    );
 
     // Initialize histograms using ndarray
     let mut joint_hist = Array2::<usize>::zeros((num_bins, num_bins));
@@ -368,6 +402,8 @@ pub fn normalized_mutual_information(x: &Array1<f64>, y: &Array1<f64>) -> f64 {
     nmi
 }
 
+/// Computes the requested measures, representing undefined results as JSON null.
+/// Empty inputs or any non-finite observation make every requested measure null.
 pub fn compute_vector_similarity_stats(
     vector_1: &Array1<f64>,
     vector_2: &Array1<f64>,
@@ -375,6 +411,8 @@ pub fn compute_vector_similarity_stats(
 ) -> serde_json::Value {
     assert_eq!(vector_1.len(), vector_2.len());
     let input_vector_dimensions = vector_1.len();
+    let invalid_input =
+        vector_1.is_empty() || has_non_finite(vector_1.iter().chain(vector_2.iter()));
 
     let similarity_measure = similarity_measure.unwrap_or("all");
     let mut computations: Vec<(Box<dyn Fn() -> f64 + Send + Sync>, &str)> = Vec::new();
@@ -400,7 +438,10 @@ pub fn compute_vector_similarity_stats(
         "input_vector_dimensions": input_vector_dimensions,
     });
     // Collect the results into a temporary vector
-    let results: Vec<(&str, f64)> = computations.into_par_iter().map(|(func, key)| (key, func())).collect();
+    let results: Vec<(&str, f64)> = computations
+        .into_par_iter()
+        .map(|(func, key)| (key, if invalid_input { f64::NAN } else { func() }))
+        .collect();
     // Update the similarity_stats JSON object
     for (key, value) in results {
         similarity_stats[key] = json!(value);
@@ -413,6 +454,11 @@ fn generate_bootstrap_sample_func(original_length_of_input: usize, sample_size: 
 }
 
 fn compute_average_and_stdev_of_25th_to_75th_percentile_func(input_vector: &Array1<f64>) -> (f64, f64) {
+    // Undefined replicates invalidate the summary; dropping or trimming them
+    // would silently bias the estimate. Fewer than two values leave an empty trim.
+    if input_vector.len() < 2 || has_non_finite(input_vector.iter()) {
+        return (f64::NAN, f64::NAN);
+    }
     let mut sorted_vector = input_vector.to_vec();
     sorted_vector.par_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let lower_idx = input_vector.len() / 4;
@@ -424,6 +470,9 @@ fn compute_average_and_stdev_of_25th_to_75th_percentile_func(input_vector: &Arra
     (trimmed_vector_avg, trimmed_vector_stdev)
 }
 
+/// Computes bootstrap summaries, using JSON null for undefined means and stdevs.
+/// The complete inputs are validated before sampling; any non-finite observation
+/// or undefined replicate invalidates the corresponding summary.
 pub fn compute_bootstrapped_similarity_stats(
     x: &Array1<f64>,
     y: &Array1<f64>,
@@ -433,16 +482,23 @@ pub fn compute_bootstrapped_similarity_stats(
 ) -> serde_json::Value {
     let original_length_of_input = x.len();
     assert_eq!(original_length_of_input, y.len());
+    let invalid_input = x.is_empty()
+        || sample_size == 0
+        || has_non_finite(x.iter().chain(y.iter()));
     let apply_bootstrap_similarity_stats_func = |_| {
         let bootstrap_sample_indices = generate_bootstrap_sample_func(original_length_of_input, sample_size);
         let x_bootstrap_sample: Array1<f64> = bootstrap_sample_indices.iter().map(|&idx| x[idx]).collect();
         let y_bootstrap_sample: Array1<f64> = bootstrap_sample_indices.iter().map(|&idx| y[idx]).collect();
         compute_vector_similarity_stats(&x_bootstrap_sample, &y_bootstrap_sample, similarity_measure)
     };
-    let list_of_similarity_stats: Vec<serde_json::Value> = (0..number_of_bootstraps)
-        .into_par_iter()
-        .map(apply_bootstrap_similarity_stats_func)
-        .collect();
+    let list_of_similarity_stats: Vec<serde_json::Value> = if invalid_input {
+        Vec::new()
+    } else {
+        (0..number_of_bootstraps)
+            .into_par_iter()
+            .map(apply_bootstrap_similarity_stats_func)
+            .collect()
+    };
     let similarity_measures = vec![
         "spearman_rho",
         "kendall_tau",
@@ -457,7 +513,10 @@ pub fn compute_bootstrapped_similarity_stats(
     });
     for key in similarity_measures {
         if similarity_measure.is_none() || similarity_measure == Some(key) || similarity_measure == Some("all") {
-            let values: Vec<f64> = list_of_similarity_stats.iter().map(|item| item[key].as_f64().unwrap()).collect();
+            let values: Vec<f64> = list_of_similarity_stats
+                .iter()
+                .map(|item| item[key].as_f64().unwrap_or(f64::NAN))
+                .collect();
             let (robust_average, stdev) = compute_average_and_stdev_of_25th_to_75th_percentile_func(&Array1::from(values));
             bootstrapped_similarity_stats[key] = json!(robust_average);
             bootstrapped_similarity_stats[format!("stdev_{}", key)] = json!(stdev);
@@ -466,54 +525,74 @@ pub fn compute_bootstrapped_similarity_stats(
     bootstrapped_similarity_stats
 }
 
+fn parse_json_params(json_params: &str) -> PyResult<Value> {
+    serde_json::from_str(json_params)
+        .map_err(|error| PyValueError::new_err(format!("Invalid JSON parameters: {error}")))
+}
+
+fn parse_vector(params: &Value, name: &str) -> PyResult<Array1<f64>> {
+    let values = params[name].as_array().ok_or_else(|| {
+        PyValueError::new_err(format!("{name} must be an array of finite numbers"))
+    })?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!("{name}[{index}] must be a finite number"))
+                })
+        })
+        .collect()
+}
+
+fn parse_positive_size(params: &Value, name: &str) -> PyResult<usize> {
+    params[name]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|&value| value > 0)
+        .ok_or_else(|| PyValueError::new_err(format!("{name} must be a positive integer")))
+}
+
+fn check_vector_lengths(x: &Array1<f64>, y: &Array1<f64>) -> PyResult<()> {
+    if x.len() != y.len() {
+        return Err(PyValueError::new_err("Input vectors must have equal lengths"));
+    }
+    Ok(())
+}
+
 #[pyfunction]
 fn py_compute_vector_similarity_stats(_py: Python, json_params: &str) -> PyResult<String> {
-    let run = || -> Result<String, Box<dyn Error>> {
-        let params: Value = serde_json::from_str(json_params)?;
+    let params = parse_json_params(json_params)?;
+    let vector_1 = parse_vector(&params, "vector_1")?;
+    let vector_2 = parse_vector(&params, "vector_2")?;
+    check_vector_lengths(&vector_1, &vector_2)?;
+    let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
 
-        let vector_1_vec: Vec<f64> = params["vector_1"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        let vector_1 = Array1::from(vector_1_vec);
-        let vector_2_vec: Vec<f64> = params["vector_2"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        let vector_2 = Array1::from(vector_2_vec);
-
-        let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
-
-        let result = compute_vector_similarity_stats(&vector_1, &vector_2, similarity_measure);
-
-        let result_str = serde_json::to_string(&result)?;
-        Ok(result_str)
-    };
-
-    match run() {
-        Ok(result_str) => Ok(result_str),
-        Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("An error occurred")),
-    }
+    let result = compute_vector_similarity_stats(&vector_1, &vector_2, similarity_measure);
+    Ok(result.to_string())
 }
 
 #[pyfunction]
 fn py_compute_bootstrapped_similarity_stats(_py: Python, json_params: &str) -> PyResult<String> {
-    let run = || -> Result<String, Box<dyn Error>> {
-        let params: Value = serde_json::from_str(json_params)?;
+    let params = parse_json_params(json_params)?;
+    let x = parse_vector(&params, "x")?;
+    let y = parse_vector(&params, "y")?;
+    check_vector_lengths(&x, &y)?;
+    let sample_size = parse_positive_size(&params, "sample_size")?;
+    let number_of_bootstraps = parse_positive_size(&params, "number_of_bootstraps")?;
+    let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
 
-        let x_vec: Vec<f64> = params["x"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        let x = Array1::from(x_vec);
-        let y_vec: Vec<f64> = params["y"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
-        let y = Array1::from(y_vec);
-
-        let sample_size = params["sample_size"].as_u64().unwrap() as usize;
-        let number_of_bootstraps = params["number_of_bootstraps"].as_u64().unwrap() as usize;
-        let similarity_measure = params.get("similarity_measure").and_then(|v| v.as_str());
-
-        let result = compute_bootstrapped_similarity_stats(&x, &y, sample_size, number_of_bootstraps, similarity_measure);
-
-        let result_str = serde_json::to_string(&result)?;
-        Ok(result_str)
-    };
-
-    match run() {
-        Ok(result_str) => Ok(result_str),
-        Err(_) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("An error occurred")),
-    }
+    let result = compute_bootstrapped_similarity_stats(
+        &x,
+        &y,
+        sample_size,
+        number_of_bootstraps,
+        similarity_measure,
+    );
+    Ok(result.to_string())
 }
 
 #[pymodule]
@@ -521,4 +600,27 @@ fn fast_vector_similarity(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_compute_vector_similarity_stats, m)?)?;
     m.add_function(wrap_pyfunction!(py_compute_bootstrapped_similarity_stats, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_average_and_stdev_of_25th_to_75th_percentile_func;
+    use ndarray::Array1;
+
+    #[test]
+    fn bootstrap_summary_propagates_non_finite_replicates_before_trimming() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for index in 0..4 {
+                let mut values = Array1::from(vec![0.25, 0.5, 0.75, 1.0]);
+                values[index] = invalid;
+                let (mean, stdev) =
+                    compute_average_and_stdev_of_25th_to_75th_percentile_func(&values);
+                assert!(mean.is_nan(), "non-finite replicate must invalidate the mean");
+                assert!(
+                    stdev.is_nan(),
+                    "non-finite replicate must invalidate the stdev"
+                );
+            }
+        }
+    }
 }

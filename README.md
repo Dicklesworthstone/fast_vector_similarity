@@ -226,6 +226,30 @@ The core functions can be used directly within Rust projects. For example, use `
 
 Install the Python package and use the exposed functions to compute vector similarity or perform bootstrapped analysis, as demonstrated in the example above.
 
+### Non-finite and undefined values
+
+Input vectors must have equal lengths. The Rust scalar similarity functions return
+`f64::NAN` if either vector is empty or contains `NaN`, positive infinity, or negative
+infinity. They do not discard, replace, or rank non-finite observations. Validation
+covers the complete vectors before distance-correlation subsampling or bootstrapping.
+
+The Rust JSON statistics functions represent undefined scores as `null`, while
+preserving the requested measure names and metadata. For bootstrap results, an
+invalid source vector or any undefined replicate makes both the corresponding
+average and `stdev_<measure>` value `null`; undefined replicates are not silently
+removed or trimmed away. Empty inputs, zero-sized bootstrap samples, and fewer than
+two bootstrap replicates also produce `null` summaries.
+
+Finite inputs can still yield an undefined statistic. For example, NMI is undefined
+when both vectors are constant because their total marginal entropy is zero. It
+returns `NaN` directly and `null` through the JSON APIs, including bootstrapping.
+
+The Python wrappers accept JSON arrays of finite numbers. They raise `ValueError`
+for malformed JSON (including `NaN`, `Infinity`, and out-of-range numeric literals),
+missing or non-array vectors, `null` or nonnumeric vector elements, unequal lengths,
+and non-positive or invalid bootstrap counts/sizes. Undefined results from valid
+finite inputs are returned as JSON `null`, which `json.loads` converts to `None`.
+
 ---
 
 ## Detailed Overview of Similarity Measures
